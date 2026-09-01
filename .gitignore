@@ -1,5 +1,7 @@
 .worktrees/
+.generated/
 .tools/
+artifacts/
 .terraform/
 *.tfstate
 *.tfstate.*

@@ -61,7 +61,8 @@ print_version() {
 
   case "$tool" in
     kubectl)
-      "$bin_dir/$tool" version --client=true --output=yaml | head -n 1
+      "$bin_dir/$tool" version --client=true --output=yaml | \
+        awk '/^[[:space:]]*gitVersion:/ { print $2; found = 1; exit } END { exit !found }'
       ;;
     kubeconform)
       "$bin_dir/$tool" -v

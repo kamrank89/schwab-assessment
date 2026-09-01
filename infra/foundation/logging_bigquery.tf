@@ -23,7 +23,7 @@ resource "google_logging_project_sink" "bigquery" {
   destination = "bigquery.googleapis.com/projects/${local.project_id}/datasets/${google_bigquery_dataset.assessment_logs.dataset_id}"
   filter      = <<-EOT
     resource.type=("k8s_container" OR "k8s_node" OR "k8s_control_plane_component" OR "k8s_cluster" OR "http_load_balancer")
-    OR (resource.type="audited_resource" AND protoPayload.serviceName="k8s.io")
+    OR (resource.type="gke_cluster" AND protoPayload.serviceName="container.googleapis.com")
   EOT
 
   unique_writer_identity = true

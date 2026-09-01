@@ -64,16 +64,19 @@ locals {
     sre = coalesce(var.sre_principals, [])
   }
 
-  team_role_memberships = {
+  team_role_memberships_grouped = {
     for membership in flatten([
       for team, roles in local.team_roles : [
         for pair in setproduct(roles, local.team_principals[team]) : {
-          team      = team
           role      = pair[0]
           principal = pair[1]
         }
       ]
-    ]) : "${membership.team}|${membership.role}|${membership.principal}" => membership
+    ]) : "${membership.role}|${membership.principal}" => membership...
+  }
+
+  team_role_memberships = {
+    for key, memberships in local.team_role_memberships_grouped : key => memberships[0]
   }
 
   normalized_dns_name = var.dns_name == null ? null : "${trimsuffix(lower(trimspace(var.dns_name)), ".")}."

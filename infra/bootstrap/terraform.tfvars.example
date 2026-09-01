@@ -1,0 +1,11 @@
+project_id            = "example-gke-assessment-12345"
+create_project        = false
+project_name          = "GKE Assessment"
+billing_account       = null
+folder_id             = null
+organization_id       = null
+state_bucket_name     = "example-gke-assessment-tfstate-12345"
+state_bucket_location = "US"
+github_repository     = "example-org/gke-assessment"
+github_repository_id  = "123456789"
+github_owner_id       = "987654321"

@@ -2,30 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Provide reproducible local validation, safe one-time bootstrap and future deployment/verification/teardown automation, credential-minimal GitHub workflows, and enough tested documentation for the user to explain and defend every design decision.
+**Goal:** Make the approved GKE assessment implementation deploy-ready after a one-time human OIDC/WIF bootstrap, with standard credential-free validation, manual deployment/teardown workflows, safe operational scripts, and complete honest documentation.
 
-**Architecture:** Python libraries implement parsing, rendering, plan fingerprinting, evidence redaction, and repository policy; thin Bash entrypoints enforce operator guards and call pinned command-line tools. Pull requests run a credential-free validation workflow. Future infrastructure mutation is manual and staged—foundation plan/apply, then platform plan/apply/workloads/verification—through protected GitHub environments using one OIDC-federated `assessment-deployer`; teardown is separately confirmed and leaves bootstrap trust intact.
+**Architecture:** Terraform owns GCP bootstrap, foundation, and platform resources; Kustomize owns Kubernetes manifests and the two regional overlays. Small Bash scripts supply operator entry points and guards, Make groups standard commands, and GitHub Actions runs credential-free validation plus manually dispatched deployment and teardown using a single OIDC-federated `assessment-deployer` identity. Repository development does not deploy anything.
 
-**Tech Stack:** Python 3.13.15, pytest, PyYAML, jsonschema, SQLFluff, yamllint, Bash/ShellCheck, Make, GitHub Actions, GitHub CLI, Google GitHub Actions auth/setup-gcloud, Terraform/Kustomize/Kind/Trivy toolchain.
+**Tech Stack:** Terraform, Terraform tests, TFLint, Trivy, Kustomize, Kubeconform, yq, jq, Bash, ShellCheck, actionlint, Make, Google Cloud CLI 582.0.0, GitHub Actions, GitHub OIDC/Google Cloud Workload Identity Federation.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-gke-assessment-platform-design.md`
 
 ## Global Constraints
 
-- Implementation and account-free validation must not authenticate to GCP or deploy anything.
-- The future one-time bootstrap is the only human-ADC phase; after it completes, GitHub stores non-secret identifiers only and uses OIDC/WIF.
-- `validate.yml` runs on pull requests and pushes to `main` with only `contents: read`; it has no `id-token`, secrets, privileged event, plan, apply, or cloud mutation.
-- `deploy.yml` and `teardown.yml` are `workflow_dispatch` only, reject non-`main` refs, use protected environments, and impersonate the same `${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}`.
-- Foundation and platform plan/apply are separate stages so an initial deployment never assumes foundation remote state already exists.
-- Saved Terraform plans are job-local, mode 0600, removed by traps, and never uploaded. Reviewers receive a redacted structural summary and deterministic fingerprint.
-- A production approval follows each plan. `production-plan` is branch-restricted but need not require an approver before a read-only plan; `production` and `teardown` require reviewers and prevent self-review.
-- Teardown requires the exact project ID plus the literal prefix `DESTROY ` followed by that same ID, deletes MCI/workloads first, then platform, then foundation, and retains bootstrap state/WIF.
-- Pin every `uses:` reference to a 40-character commit SHA. Do not use `pull_request_target` or mutable Action tags.
-- Install every non-runner tool from an exact version and verify its release checksum; no installer accepts `latest`.
-- Treat Docker Hub digest and vulnerability checks as account-free but network-dependent, never as live GCP evidence.
-- Allow evidence statuses only `verified-account-free`, `deployment-evidence-pending`, `verified-live`, and `not-applicable`.
-- Preserve the supplied assessment source byte-for-byte when moving it to `docs/requirements/assessment-source.md`.
-- Documentation must distinguish fact, design decision, inference, limitation, future recommendation, and deployment evidence.
+- Do not authenticate to GCP, run a cloud plan/apply, create cloud resources, or make live-cloud claims during repository development or credential-free CI.
+- The future one-time `bootstrap` uses a human's Application Default Credentials to create the state backend, GitHub OIDC/WIF provider, and exactly one `assessment-deployer` service account. After that, GitHub contains non-secret identifiers only—never a service-account key, kubeconfig, Terraform state, plan file, or secret value.
+- Terraform owns cloud resources in `infra/bootstrap`, `infra/foundation`, and `infra/platform`; Kustomize owns Kubernetes resources under `k8s/`. Do not introduce a Kubernetes Terraform provider, application source code, Python runtime, pip, pytest, `pyproject.toml`, requirements/lock files, or custom helper framework.
+- Both assessed applications use `replicas: 3` and HPA `minReplicas: 3` in every regional production overlay. Grafana is a recoverable supporting workload and is not an assessed application replica set.
+- `validate.yml` runs only for pull requests and pushes to `main`, with `permissions: contents: read`. It has no OIDC, secrets, environment, `gcloud`, `bq`, Terraform plan/apply, or cluster access.
+- `deploy.yml` and `teardown.yml` are `workflow_dispatch` only, reject non-`main` refs, and use the same `${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}` through short-lived OIDC credentials. Deployment is never automatic.
+- Protected GitHub environments, required reviewers, CODEOWNERS, and `main` branch protection are recommended production hardening. Document them precisely, but do not require a bespoke setup script or claim they already exist. Destructive teardown confirmation remains mandatory.
+- Teardown requires the exact project ID and literal confirmation `DESTROY <project-id>`, deletes workload/MCI resources before platform and foundation, and must not target bootstrap state, the WIF provider, or the deployer identity.
+- Pin application images by digest and external Actions by full commit SHA. Use fixed versions of standard validation tools. Do not add custom repository-contract tests, plan fingerprints, evidence parsers, fake-cloud command harnesses, or parser/test frameworks; the one small Bash manifest renderer is deployment functionality, not a validation framework.
+- Terraform plans, generated kubeconfigs, tokens, passwords, Secret Manager values, and sensitive output must not enter Git, logs, job summaries, or uploaded artifacts.
+- Documentation must distinguish account-free validation from `deployment-evidence-pending`. No endpoint, screenshot, failover, HPA, BigQuery, Grafana, IAM, or teardown result is live evidence until an authorized run records it.
 
 ---
 
@@ -33,249 +30,193 @@
 
 ```text
 .
-├── .editorconfig
-├── .gitignore
-├── .python-version
 ├── .github/
-│   ├── CODEOWNERS
-│   ├── dependabot.yml
-│   └── workflows/{validate,deploy,teardown}.yml
+│   ├── workflows/{validate,deploy,teardown}.yml
+│   └── dependabot.yml
 ├── Makefile
-├── pyproject.toml
-├── requirements-dev.lock
 ├── scripts/
-│   ├── __init__.py
-│   ├── validate.py
+│   ├── install-tools.sh
+│   ├── render-manifests.sh
 │   ├── bootstrap.sh
-│   ├── configure-github.sh
+│   ├── configure-github-variables.sh
 │   ├── deploy.sh
 │   ├── verify.sh
-│   ├── teardown.sh
-│   ├── install-tools.sh
-│   └── lib/{__init__.py,command.py,validation.py,render.py,plan_fingerprint.py,evidence.py,repository.py,workflows.py}
-├── tools/{versions.env,checksums.sha256}
-├── tests/
-│   ├── conftest.py
-│   ├── unit/{test_command.py,test_render.py,test_plan_fingerprint.py,test_evidence.py}
-│   └── repository/{test_action_pins.py,test_workflow_security.py,test_script_contracts.py,test_documentation_contract.py,test_traceability_contract.py,test_evidence_status.py,test_toolchain_lock.py}
+│   └── teardown.sh
+├── infra/{bootstrap,foundation,platform}/
+│   ├── *.tf
+│   └── *.tftest.hcl
+├── k8s/
+│   ├── access/
+│   ├── base/
+│   ├── multicluster/
+│   └── overlays/{us-central1,us-east1,config-us-central1}/
+├── observability/bigquery/queries/*.sql
+├── tools/{versions.env,checksums.sha256,images.env}
 ├── docs/
 │   ├── requirements/{assessment-source.md,traceability.md}
-│   ├── architecture/{overview.md,customer-traffic-flow.md,observability-flow.md,identity-and-delivery.md,terraform-state-boundaries.md,teardown-sequence.md}
-│   ├── adr/{0001-terraform-state-boundaries.md,0002-gke-autopilot.md,0003-mci-mcs-baseline-and-gateway-migration.md,0004-github-actions-push-delivery.md,0005-single-assessment-deployer-identity.md,0006-public-images-and-digest-allowlist.md,0007-secret-manager-and-workload-identity.md,0008-self-hosted-grafana.md,0009-observability-data-sources.md,0010-binary-authorization-deferral.md,0011-cost-controls.md}
-│   ├── setup/{prerequisites.md,bootstrap.md,github-configuration.md,deployment.md,dns-and-tls.md,verification.md,teardown.md}
-│   ├── ci-cd/{workflow-security.md,toolchain.md,github-environments.md}
-│   ├── security/{threat-model.md,iam-matrix.md,supply-chain-policy.md,limitations.md}
-│   ├── observability/{bigquery-schema.md,grafana-provisioning.md,dashboard-interpretation.md}
-│   ├── operations/{rollout-and-rollback.md,scaling.md,regional-failover.md,secret-rotation.md,disaster-recovery.md,dashboard-use.md}
-│   ├── troubleshooting/{readiness-probe-drill.md,incident-template.md}
-│   ├── evidence/{checklist.md,status.md,deployment-evidence-template.md,residual-resource-check.md}
-│   ├── cost-model.md
-│   ├── interview-guide.md
-│   └── references.md
+│   ├── architecture/{overview.md,delivery-and-identity.md,traffic-and-observability.md}
+│   ├── adr/{0001-autopilot.md,0002-mci-mcs-and-gateway-migration.md,0003-single-oidc-identity.md,0004-public-images-and-secrets.md}
+│   ├── setup/{prerequisites.md,bootstrap.md,github.md,deployment.md,dns-tls.md,teardown.md}
+│   ├── operations/{verification.md,rollback.md,scaling-and-failover.md,troubleshooting.md}
+│   ├── security/{iam-and-secrets.md,supply-chain.md,limitations.md}
+│   ├── observability/{grafana.md,bigquery.md}
+│   ├── evidence/{checklist.md,status.md,live-evidence-template.md}
+│   ├── cost.md
+│   ├── references.md
+│   └── interview-guide.md
 └── README.md
 ```
 
-### Task 1: Repository harness and checksum-locked tools
+Infrastructure and manifests are supplied by the platform implementation plan. This delivery plan adds the lifecycle, standard validation, workflow, and documentation surface; it may add ordinary Terraform `*.tftest.hcl` files beside a root when that root needs a native configuration assertion.
+
+### Task 1: Add the small Bash/Make toolchain and standard validation
 
 **Files:**
-- Create: `.editorconfig`, `.gitignore`, `.python-version`, `pyproject.toml`, `requirements-dev.lock`, `Makefile`
-- Create: `scripts/{__init__.py,validate.py,install-tools.sh}`, `scripts/lib/{__init__.py,command.py,validation.py}`
-- Create: `tools/{versions.env,checksums.sha256}`
-- Create: `tests/conftest.py`, `tests/unit/test_command.py`, `tests/repository/test_toolchain_lock.py`
+- Create: `.editorconfig`, `.gitignore`, `Makefile`, `scripts/install-tools.sh`, `tools/{versions.env,checksums.sha256}`
 
 **Interfaces:**
-- Produces `CommandResult(argv:tuple[str,...], returncode:int, stdout:str, stderr:str)`, `run_checked(argv:Sequence[str], cwd:Path|None=None, env:Mapping[str,str]|None=None, redact:Iterable[str]=()) -> CommandResult`, and `require_tools(names:Sequence[str]) -> None`.
-- Produces immutable `Violation(code:str, path:str, message:str)` and a `runtime_values` pytest fixture containing non-secret syntactically valid examples for the eight allowed renderer tokens.
-- Produces Make targets `venv`, `tools`, `test-unit`, `test-terraform`, `test-k8s`, `test-observability`, `test-kind`, `test-repository`, `docs-check`, `validate-offline`, `validate-network`, `validate`, and the guarded human-only `bootstrap` entry point.
+- Produces Make targets `tools`, `tool-versions`, `fmt`, `validate-terraform`, `validate-kubernetes`, `validate-shell`, `validate-workflows`, `validate-security`, `validate-grafana`, `validate`, `validate-images`, and the guarded human-only `bootstrap` target.
+- `make validate` is the credential-free developer/CI contract. It does not call `gcloud`, `bq`, Terraform plan/apply, or an external cloud API.
 
-- [ ] **Step 1: Write failing command/toolchain tests**
+- [ ] **Step 1: Install only fixed standard CLI tools**
 
-```python
-from pathlib import Path
-import re
+Implement `scripts/install-tools.sh` with `set -euo pipefail`. `tools/versions.env` pins Terraform 1.15.9, kubectl 1.35.8, TFLint 0.64.0, Trivy 0.72.0, Kustomize 5.8.1, Kubeconform 0.7.0, yq 4.53.2, jq 1.8.2, ShellCheck 0.11.0, actionlint 1.7.12, and crane 0.21.7. Install those releases into ignored `.tools/bin`. Verify downloaded archives against the simple committed `tools/checksums.sha256` inventory where the publisher supplies checksums, print each version, and fail for a missing binary or unsupported platform. This is a small shell installer, not a custom validation framework; add no language runtime, package manager, or installer library.
 
-from scripts.lib.command import run_checked
+- [ ] **Step 2: Add direct Make targets**
 
+Use simple recipes and explicit Terraform-root loops. This is the validation contract:
 
-def test_run_checked_captures_output_and_redacts_secret(tmp_path):
-    result = run_checked(
-        ["python3", "-c", "print('token=sensitive-value')"],
-        redact=["sensitive-value"],
-    )
-    assert result.returncode == 0
-    assert "sensitive-value" not in result.stdout
-    assert "[REDACTED]" in result.stdout
+```make
+SHELL := /usr/bin/env bash
+PATH := $(CURDIR)/.tools/bin:$(PATH)
 
+.PHONY: tools tool-versions bootstrap fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-security validate-images validate
 
-def test_every_tool_has_an_exact_version_and_two_linux_checksums():
-    versions = Path("tools/versions.env").read_text().splitlines()
-    assert all("latest" not in line.lower() for line in versions)
-    assert all(re.fullmatch(r"[A-Z0-9_]+=[0-9][0-9A-Za-z.+_-]*", line) for line in versions if line and not line.startswith("#"))
-    checksums = Path("tools/checksums.sha256").read_text()
-    for arch in ("linux-amd64", "linux-arm64"):
-        assert arch in checksums
+tools:
+
+	./scripts/install-tools.sh
+
+tool-versions:
+
+	@for tool in terraform kubectl tflint trivy kustomize kubeconform yq jq shellcheck actionlint crane; do \
+	  command -v $$tool >/dev/null; \
+	  $$tool version 2>/dev/null || $$tool --version; \
+	done
+
+bootstrap:
+
+	./scripts/bootstrap.sh --project-id "$(PROJECT_ID)" --state-bucket "$(STATE_BUCKET)" \
+	  --github-repository "$(GITHUB_REPOSITORY)" --github-owner-id "$(GITHUB_OWNER_ID)" \
+	  --github-repository-id "$(GITHUB_REPOSITORY_ID)"
+
+fmt:
+
+	terraform fmt -check -recursive infra
+
+validate-terraform:
+
+	@for root in infra/bootstrap infra/foundation infra/platform; do \
+	  terraform -chdir=$$root init -backend=false; \
+	  terraform -chdir=$$root validate; \
+	  terraform -chdir=$$root test; \
+	done
+	@for root in infra/bootstrap infra/foundation infra/platform; do \
+	  tflint --chdir=$$root --init; \
+	  tflint --chdir=$$root; \
+	done
+
+validate-kubernetes:
+
+	@for overlay in k8s/access/us-central1 k8s/access/us-east1 k8s/access/config-us-central1 k8s/overlays/us-central1 k8s/overlays/us-east1 k8s/overlays/config-us-central1/http k8s/overlays/config-us-central1/tls k8s/overlays/config-us-central1/https; do \
+	  kustomize build $$overlay | kubeconform -strict -summary -ignore-missing-schemas; \
+	done
+	@find .github k8s -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | \
+	  xargs -0 -n1 yq eval '.' >/dev/null
+	@for overlay in k8s/overlays/us-central1 k8s/overlays/us-east1; do \
+	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "Deployment" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.replicas] | length == 2 and all(.[]; . == 3)' -; \
+	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "HorizontalPodAutoscaler" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minReplicas] | length == 2 and all(.[]; . == 3)' -; \
+	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "PodDisruptionBudget" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minAvailable] | length == 2 and all(.[]; . == 2)' -; \
+	done
+
+validate-shell:
+
+	bash -n scripts/*.sh
+	shellcheck scripts/*.sh
+
+validate-workflows:
+
+	actionlint .github/workflows/*.yml
+	yq -e '.permissions.contents == "read" and (.permissions | length == 1)' .github/workflows/validate.yml >/dev/null
+	yq -e '(.on | has("workflow_dispatch")) and (.on | length == 1)' .github/workflows/deploy.yml >/dev/null
+	yq -e '(.on | has("workflow_dispatch")) and (.on | length == 1)' .github/workflows/teardown.yml >/dev/null
+
+validate-grafana:
+
+	@find k8s/base/grafana/files/dashboards -type f -name '*.json' -print0 | \
+	  xargs -0 -n1 jq empty
+	@test "$$(find k8s/base/grafana/files/dashboards -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = 3
+	@jq -e '([.panels[] | select(.type != "row")] | length) == 4' k8s/base/grafana/files/dashboards/assessment-overview.json
+
+validate-security:
+
+	trivy config --exit-code 1 --severity HIGH,CRITICAL infra
+	trivy config --exit-code 1 --severity HIGH,CRITICAL k8s
+
+validate-images:
+
+	@set -a; . ./tools/images.env; set +a; \
+	for image in "$$APP_A_IMAGE" "$$APP_B_IMAGE" "$$GRAFANA_IMAGE"; do \
+	  printf '%s' "$$image" | grep -Eq '^docker\.io/.+@sha256:[0-9a-f]{64}$$'; \
+	  crane digest "$$image" >/dev/null; \
+	  trivy image --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL "$$image"; \
+	done
+
+validate: fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-security
 ```
 
-- [ ] **Step 2: Run and observe import/file failures**
+`kubeconform -ignore-missing-schemas` permits GKE-specific MCI/MCS resources when published schemas are unavailable while still strictly checking recognized Kubernetes resources. Do not add a broad custom test to replace that tool behavior.
 
-Run: `python3 -m pytest tests/unit/test_command.py tests/repository/test_toolchain_lock.py -q`
+- [ ] **Step 3: Verify and commit the shared harness**
 
-Expected: FAIL because the helper and lock files do not exist.
-
-- [ ] **Step 3: Add exact Python environment**
-
-`.python-version` contains `3.13.15`, and the workflow's pinned setup-python action reads that file. `pyproject.toml` configures pytest paths and strict markers. Generate `requirements-dev.lock` with hashes for exact releases of pytest, PyYAML, jsonschema, yamllint, and SQLFluff using:
+Run:
 
 ```bash
-python3 -m pip install pip-tools==7.6.1
-python3 -m piptools compile --generate-hashes --resolver=backtracking --output-file=requirements-dev.lock pyproject.toml
-python3 -m pip install --require-hashes -r requirements-dev.lock
-```
-
-The committed lock contains no editable VCS or URL dependency.
-
-- [ ] **Step 4: Lock the repository tool versions**
-
-`tools/versions.env` defines exact versions for Terraform 1.15.9, kubectl 1.35.8, Kustomize 5.8.1, Kubeconform 0.7.0, Kind 0.31.0, TFLint 0.64.0, Conftest 0.68.2, Trivy 0.72.0, crane 0.21.7, ShellCheck 0.11.0, yq 4.53.2, and gcloud 582.0.0. `tools/checksums.sha256` records Linux AMD64/ARM64 and Darwin AMD64/ARM64 where publishers provide those assets.
-
-- [ ] **Step 5: Implement the verified installer**
-
-`install-tools.sh` uses `set -Eeuo pipefail`, detects only supported OS/architecture pairs, downloads into a `mktemp -d` directory, verifies the matching committed SHA-256 before extraction, installs into ignored `.tools/bin`, prints versions, and cleans the temporary directory with a trap. It rejects a missing checksum, redirect to an unapproved host, unsupported platform, and any version string equal to `latest`.
-
-- [ ] **Step 6: Implement command redaction and Make targets**
-
-`run_checked` uses `subprocess.run(..., shell=False, text=True, capture_output=True)` and never logs environment values. Make uses `.tools/bin` and `.venv/bin` explicitly and does not silently skip missing binaries. `validate-offline` calls deterministic tests only; `validate-network` resolves/scans images; `validate` calls both plus Kind.
-
-`make bootstrap` is deliberately outside every validation dependency. It accepts only the named non-secret Make variables `PROJECT_ID`, `STATE_BUCKET`, `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID`, `GITHUB_OWNER_ID`, and `CREATE_PROJECT`; creation mode additionally requires `BILLING_ACCOUNT` and permits at most one of `FOLDER_ID` or `ORGANIZATION_ID`. Omitting both supports a personal/no-organization account and triggers an explicit governance warning. The recipe rejects missing or inconsistent combinations before execution and passes each value to `scripts/bootstrap.sh` as a separately quoted argv element; it accepts no free-form shell flag string. A dry-run test proves `make bootstrap` is never reached by `make validate`, and invoking it without the required variables fails before any cloud command.
-
-- [ ] **Step 7: Verify and commit the harness**
-
-```bash
-python3 -m pytest tests/unit/test_command.py tests/repository/test_toolchain_lock.py -q
+make tools
+make tool-versions
 bash -n scripts/install-tools.sh
-make -n validate
+shellcheck scripts/install-tools.sh
+git add .editorconfig .gitignore Makefile scripts/install-tools.sh tools/versions.env tools/checksums.sha256
+git commit -m "build: add reproducible shell toolchain"
 ```
 
-Expected: PASS; the dry run contains no cloud plan/apply or gcloud mutation.
+Expected: every pinned compiled CLI reports the intended version and the installer passes static shell checks. Do not run `make validate` until the infrastructure, workload, workflow, and dashboard inputs exist.
 
-```bash
-git add .editorconfig .gitignore .python-version Makefile pyproject.toml requirements-dev.lock scripts tools tests/conftest.py tests/unit/test_command.py tests/repository/test_toolchain_lock.py
-git commit -m "build: add reproducible validation toolchain"
-```
-
-### Task 2: Safe rendering, plan fingerprints, and evidence records
+### Task 2: Add safe future bootstrap, deployment, verification, and teardown scripts
 
 **Files:**
-- Create: `scripts/lib/{render.py,plan_fingerprint.py,evidence.py,repository.py}`
-- Create: `tests/unit/{test_render.py,test_plan_fingerprint.py,test_evidence.py}`
-- Extend: `scripts/validate.py`
+- Create: `scripts/{render-manifests,bootstrap,configure-github-variables,deploy,verify,teardown}.sh`
+- Modify: `Makefile`
 
 **Interfaces:**
-- Produces `render_text(text:str, values:Mapping[str,str]) -> str`, restricted to the eight tokens in the master plan.
-- Produces `canonical_plan_summary(plan_json:Mapping) -> PlanSummary`, `PlanSummary.fingerprint -> str`, and `PlanSummary.to_markdown() -> str`.
-- Produces `EvidenceRecord(check_id:str, status:EvidenceStatus, command:tuple[str,...], started_at:str, commit_sha:str, artifact_paths:tuple[str,...], note:str)` and `write_evidence(records, out_dir)`.
+- `bootstrap.sh --project-id ID --state-bucket BUCKET --github-repository OWNER/REPO --github-owner-id ID --github-repository-id ID` is the one-time human-credential operation.
+- `configure-github-variables.sh --repository OWNER/REPO --outputs FILE` configures non-secret repository variables only.
+- `render-manifests.sh`, `deploy.sh foundation|platform|workloads`, `verify.sh smoke`, `verify.sh hpa`, `verify.sh failover`, and `teardown.sh --project-id ID --confirmation "DESTROY ID"` are future manual-workflow/operator entry points.
+- Human bootstrap requires Google Cloud CLI 582.0.0. Authenticated GitHub jobs install that same version plus `gke-gcloud-auth-plugin` and `bq` through the pinned Google setup action; these cloud CLIs are intentionally outside the credential-free `.tools` installer.
 
-- [ ] **Step 1: Write failing renderer tests**
+- [ ] **Step 1: Implement one-time bootstrap**
 
-```python
-def test_renderer_substitutes_only_declared_runtime_tokens():
-    text = "${GCP_PROJECT_ID} $__timeFilter(timestamp) $cluster"
-    rendered = render_text(text, {"GCP_PROJECT_ID": "project-123"})
-    assert rendered == "project-123 $__timeFilter(timestamp) $cluster"
+`bootstrap.sh` rejects `GITHUB_ACTIONS=true`, requires `gcloud auth application-default print-access-token` to succeed without displaying its token, and requires a typed project-ID confirmation before `terraform apply` in `infra/bootstrap`. It creates the versioned GCS state backend, repository-scoped GitHub OIDC/WIF provider, and single `assessment-deployer` identity defined by Terraform. Write only non-secret Terraform outputs to a mode-0600 ignored generated file, then call `configure-github-variables.sh` when `gh auth status` is available.
 
-
-def test_renderer_fails_on_an_unresolved_runtime_token():
-    with pytest.raises(ValueError, match="unresolved"):
-        render_text("${UNAPPROVED_VALUE}", {})
-```
-
-- [ ] **Step 2: Write failing plan-fingerprint tests**
-
-Use two Terraform JSON documents with identical resource changes but different ordering and sensitive values. Assert equal 64-hex fingerprints, absence of values in Markdown, and a changed fingerprint when a non-sensitive planned value or action changes.
-
-- [ ] **Step 3: Write failing evidence tests**
-
-Assert only the four allowed statuses serialize, UTC timestamps end in `Z`, live evidence requires workflow run URL plus artifact, and `verified-account-free` rejects a command containing `terraform apply`, `gcloud ... create`, or a non-Kind `kubectl apply` context.
-
-- [ ] **Step 4: Run and observe missing helpers**
-
-Run: `python3 -m pytest tests/unit/test_render.py tests/unit/test_plan_fingerprint.py tests/unit/test_evidence.py -q`
-
-Expected: FAIL on imports.
-
-- [ ] **Step 5: Implement exact behavior**
-
-Fingerprint input retains resource address, provider name, action list, replacement reason, import flag, unknown markers, and non-sensitive planned values. Paths marked by `before_sensitive` or `after_sensitive` are replaced with the constant `[SENSITIVE]`; variables, provider configuration, and private fields are dropped before canonical JSON hashing with sorted keys/separators. Human Markdown retains only addresses/actions/counts and never prints planned values. Evidence redaction masks Authorization headers, access tokens, passwords, private keys, and caller-supplied redaction values before writing JSON/Markdown.
-
-- [ ] **Step 6: Add validate subcommands**
-
-`validate.py` exposes `terraform`, `manifests`, `images`, `dashboards`, `sql`, `docs`, `kind`, and `all`, each with required `--out`. It runs commands through `run_checked`, creates no output outside the supplied directory, and returns nonzero if a required check is unavailable or fails.
-
-- [ ] **Step 7: Verify and commit**
+Do not create a service-account key. Do not copy credentials, state, Terraform plans, or secrets into GitHub. The future human command is:
 
 ```bash
-python3 -m pytest tests/unit/test_render.py tests/unit/test_plan_fingerprint.py tests/unit/test_evidence.py -q
-python3 scripts/validate.py --help
+make bootstrap PROJECT_ID=example-project STATE_BUCKET=example-project-tfstate \
+  GITHUB_REPOSITORY=OWNER/REPO GITHUB_OWNER_ID=123 GITHUB_REPOSITORY_ID=456
 ```
 
-Expected: PASS and all subcommands listed.
+- [ ] **Step 2: Configure non-secret repository variables and recommend governance**
 
-```bash
-git add scripts/lib scripts/validate.py tests/unit
-git commit -m "feat: add safe render and evidence primitives"
-```
-
-### Task 3: Bootstrap, GitHub configuration, deployment, verification, and teardown scripts
-
-**Files:**
-- Create: `scripts/{bootstrap.sh,configure-github.sh,deploy.sh,verify.sh,teardown.sh}` and `scripts/lib/live_drills.py`
-- Create: `tests/unit/test_live_drills.py`, `tests/repository/test_script_contracts.py`
-- Create test fixtures dynamically under pytest temporary directories; do not commit fake credentials.
-
-**Interfaces:**
-- `bootstrap.sh`: human ADC bootstrap and state migration.
-- `configure-github.sh`: non-secret variables/environments.
-- `deploy.sh`: `plan|apply|workloads|initialize-secrets` operations.
-- `verify.sh`: `preflight|all|hpa-drill|regional-failover-drill` evidence; live drills require explicit opt-in and bounded restoration.
-- `teardown.sh`: confirmed reverse-order cleanup excluding bootstrap.
-
-- [ ] **Step 1: Write a fake-command harness and failing guard tests**
-
-```python
-def fake_command(bin_dir: Path, name: str, log: Path):
-    path = bin_dir / name
-    path.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$0 $*\" >> {log}\n")
-    path.chmod(0o755)
-
-
-def test_teardown_rejects_wrong_confirmation_before_mutation(fake_path, command_log):
-    result = subprocess.run([
-        "bash", "scripts/teardown.sh",
-        "--project-id", "assessment-123",
-        "--state-bucket", "assessment-123-tfstate",
-        "--confirmation", "DESTROY wrong-project",
-    ], env=fake_path, text=True, capture_output=True)
-    assert result.returncode != 0
-    assert command_log.read_text() == ""
-```
-
-Add tests that `make bootstrap` maps only its named variables and rejects missing inputs before mutation; bootstrap rejects CI and missing ADC; plan/apply pass one identical state bucket to backend and remote-state configuration; apply rejects a local caller without `--allow-local-apply`; apply rejects a fingerprint mismatch; workloads rejects unresolved `${...}` and a null certificate only when HTTPS is enabled; cluster access requires the GKE auth plugin, ADC mode, explicit project/location, and an ephemeral kubeconfig; workload delivery waits for the Secret Manager CSI API on both clusters before either regional apply and polls both Fleet MCS and MCI with bounded timeouts before the first MCS/MCI apply; configure-GitHub writes no secret; failover rejects an absent or mismatched disruption confirmation before mutation; every drill registers cleanup before its first mutable or background operation; and teardown has no path to bootstrap destroy. Unit-test the load generator with a local fake HTTP server, fixed duration and concurrency ceilings, response-body discard, and deterministic cancellation.
-
-- [ ] **Step 2: Run and prove scripts are absent**
-
-Run: `python3 -m pytest tests/unit/test_live_drills.py tests/repository/test_script_contracts.py -q`
-
-Expected: FAIL with the missing live-drill module and script paths.
-
-- [ ] **Step 3: Implement one-time bootstrap**
-
-`bootstrap.sh` requires project ID, repository owner/name, immutable owner/repository IDs, state bucket, and either `--existing-project` or billing plus optional parent creation inputs. The named `make bootstrap` variables map one-to-one to those flags and are the documented entry point. The script requires `gcloud auth application-default print-access-token` to succeed with both output streams suppressed so the token is never logged, rejects `GITHUB_ACTIONS=true`, initializes bootstrap locally without a backend block, applies only after an interactive typed project confirmation, copies `backend.tf.example` to ignored `infra/bootstrap/backend.generated.tf`, migrates state to `prefix=bootstrap`, writes mode-0600 `.generated/bootstrap-outputs.json`, and calls `configure-github.sh` unless explicitly skipped. There is no key-creation command.
-
-Before the first apply, bootstrap performs read-only checks for the selected ADC/quota project, target project existence versus creation mode, billing linkage or Billing Account User access, parent Project Creator access when applicable, state-bucket name availability, required API usability, GitHub numeric IDs matching the repository, and absence of committed Google credentials. It reports organization policies or quota failures that could block two regional Autopilot clusters, external IAM-authorized DNS endpoints, global load balancing, or MCI; it never weakens a policy automatically.
-
-- [ ] **Step 4: Implement non-secret GitHub setup**
-
-`configure-github.sh` verifies `gh auth status`, creates/enables `production-plan`, `production`, and `teardown` environments through the GitHub API, and sets only:
+Populate only:
 
 ```text
 GCP_PROJECT_ID
@@ -288,328 +229,196 @@ GCP_REGION_SECONDARY
 GCP_ENABLE_HTTPS
 GCP_MANAGE_DNS
 GCP_CREATE_DNS_ZONE
-GCP_DEV_PRINCIPALS_JSON
-GCP_OPS_PRINCIPALS_JSON
-GCP_SRE_PRINCIPALS_JSON
+GCP_DNS_NAME
+GCP_DNS_ZONE_NAME
+GCP_DNS_ZONE_DNS_NAME
 ```
 
-The last six receive safe HTTP-first defaults `false`, `false`, `false`, `[]`, `[]`, and `[]`. Optional `GCP_DNS_NAME`, `GCP_DNS_ZONE_NAME`, and `GCP_DNS_ZONE_DNS_NAME` variables are omitted until the operator owns a domain; the workflow passes them only when non-empty. The third value is required only when Terraform creates a public zone and is the trailing-dot DNS suffix containing the certificate hostname. It prints exact repository-admin follow-up for `main` branch protection, required `validate` check, CODEOWNERS, production/teardown reviewers, prevent-self-review, and deployment-branch restrictions because reviewer identities are a human governance choice. Without `gh`, it prints exact `gh variable set` commands from non-secret output values.
+Set the HTTPS/DNS booleans to `false` and DNS strings to empty for the immediately deployable HTTP baseline; no source edit is required. Print a manual `gh variable set` fallback when GitHub CLI access is unavailable. Do not create environments, reviewers, branch rules, or secrets in this script; documentation recommends protected `production`/`teardown` environments, reviewers, prevent-self-review, CODEOWNERS, and `main` protection as production hardening.
 
-- [ ] **Step 5: Implement plan/apply with job-local plans**
+- [ ] **Step 3: Implement guarded Terraform and workload deployment**
 
-`deploy.sh plan --stack foundation|platform` initializes the selected state prefix, passes the same required bucket as `TF_VAR_terraform_state_bucket` for remote-state lookup, creates a mode-0600 plan in `$RUNNER_TEMP`, converts it to JSON, writes only redacted Markdown and fingerprint, then removes plan/JSON on exit. For foundation it maps the checked-in HTTP defaults plus the optional GitHub variables to typed `TF_VAR_enable_https`, `TF_VAR_manage_dns`, `TF_VAR_create_dns_zone`, DNS hostname/zone resource name/zone suffix only when non-empty, and JSON-decoded team principal lists; platform consumes no independent copies of those settings. `apply` recomputes the plan and fingerprint, compares with `--expected-fingerprint` using constant-time string comparison, and applies that fresh local saved plan immediately. It fails outside GitHub Actions unless `--allow-local-apply` is supplied by an authenticated operator.
+`deploy.sh foundation` and `deploy.sh platform` run `terraform init`, create a mode-0600 temporary plan with `terraform plan -out`, print only resource addresses and action types from `terraform show -json | jq`, immediately apply that same job-local plan, and remove it through a trap. Saved plans are never uploaded or transferred between jobs.
 
-- [ ] **Step 6: Implement secret initialization and workload delivery**
+`render-manifests.sh` copies renders into ignored `.generated/`, validates every substitution value against its expected identifier/IP/email form, replaces only the approved Terraform output tokens with ordinary `sed`, and fails if any `${...}` token remains. It does not depend on `envsubst` or a language runtime. `deploy.sh workloads` first creates a mode-0600 ephemeral kubeconfig for each exact cluster through its IAM-aware DNS endpoint and applies only the namespace and `k8s/access/*` overlays. It then creates fresh Connect Gateway kubeconfigs and applies the rendered regional workload and MCI/MCS overlays through the configured Fleet memberships. Create initial App A/Grafana Secret Manager versions at deployment time by piping `openssl rand` to `gcloud secrets versions add --data-file=-`; never place values in Terraform, GitHub variables, argv, output, or artifacts. Use bounded rollout/reconciliation waits and fail on timeout.
 
-`initialize-secrets` adds a version only when `app-a-demo` or `grafana-admin` has no enabled version. App A receives 32 random bytes encoded with newline-free `openssl base64 -A`; the Grafana password uses 32 random bytes encoded as newline-free hexadecimal so it is printable and safe for file-based authentication. Values stream directly from `openssl rand` through encoding into `gcloud secrets versions add --data-file=-` and never enter argv/output/artifacts.
+- [ ] **Step 4: Implement normal smoke verification and optional controlled drills**
 
-`workloads` creates a mode-0600 temporary kubeconfig with `mktemp`, registers its removal trap immediately, and for each new cluster runs the exact initial credential command with that file as `KUBECONFIG`:
+`verify.sh smoke` checks Fleet/cluster readiness, three Ready replicas for each assessed application in each cluster, rollout success, MCI/MCS/backend health, HTTP `/app-a` and `/app-b`, optional HTTPS after certificate activation, BigQuery log availability, and Grafana health/dashboard provisioning. It renders only the project/dataset tokens and validates each committed BigQuery SQL file after deployment; data queries receive bounded time parameters while the metadata query does not:
 
 ```bash
-KUBECONFIG="$ephemeral_kubeconfig" \
-  gcloud container clusters get-credentials "$cluster_name" \
-    --location "$region" \
-    --project "$GCP_PROJECT_ID" \
-    --dns-endpoint
+for query_file in observability/bigquery/queries/*.sql; do
+  query_text="$(sed -e "s|\${GCP_PROJECT_ID}|${GCP_PROJECT_ID}|g" -e "s|\${BIGQUERY_DATASET}|${BIGQUERY_DATASET}|g" "${query_file}")"
+  query_parameters=()
+  if [[ "${query_file}" != */schema-discovery.sql ]]; then
+    query_parameters+=(--parameter=start_time:TIMESTAMP:"${VERIFY_START_TIME}")
+    query_parameters+=(--parameter=end_time:TIMESTAMP:"${VERIFY_END_TIME}")
+  fi
+  bq query --project_id="${GCP_PROJECT_ID}" --dry_run --use_legacy_sql=false "${query_parameters[@]}" "${query_text}"
+done
 ```
 
-Through that IAM-aware DNS endpoint it creates the two labeled namespaces and applies only the committed Connect Gateway impersonation and namespace Role/RoleBinding objects (including MCI RBAC on the configuration cluster). It proves the exact deployer can perform the expected namespaced verbs. Before either regional overlay is applied, it uses each cluster context to poll with a bounded timeout until API discovery serves `secretproviderclasses.secrets-store.csi.x-k8s.io` at `secrets-store.csi.x-k8s.io/v1` and `csidriver/secrets-store-gke.csi.k8s.io` exists. A terminal error or timeout fails before workload mutation. It then removes the bootstrap kubeconfig, creates a fresh mode-0600 ephemeral Connect Gateway kubeconfig, and runs `KUBECONFIG="$gateway_kubeconfig" gcloud container fleet memberships get-credentials "$membership_name" --location global --project "$GCP_PROJECT_ID"` for both exact memberships before all remaining delivery. This resolves the unavoidable first-gateway-RBAC bootstrap without a public IP endpoint, static credential, or human follow-up.
+Store only redacted timestamps, resource names, status classes, and command output in `artifacts/live/`; do not capture response bodies, tokens, secret values, kubeconfig, state, or plans.
 
-The script renders regional and HTTP overlays from the seven non-null common values (`GCP_PROJECT_ID`, project number, global IP, Armor policy, both workload GSA emails, and dataset). It applies regional overlays to their matching clusters and waits for their rollouts. Before any multi-cluster object, it polls both `gcloud container fleet multi-cluster-services describe --project "$GCP_PROJECT_ID" --format=json` and `gcloud container fleet ingress describe --project "$GCP_PROJECT_ID" --format=json` with bounded timeouts until both features report `resourceState.state` as `ACTIVE` and each command reports exactly the two required global memberships with `state.code` equal to `OK`. Missing, extra, pending, or failed membership state is not accepted. A terminal error or timeout fails before any MCS/MCI object is applied; this accounts for asynchronous feature and CRD enablement on a first deployment. It then applies HTTP MCI only to the configuration membership. Only when HTTPS is enabled does it require a non-null `TLS_CERTIFICATE_NAME`, add the eighth substitution, prove DNS resolves to the reserved IP, apply the TLS-attachment overlay, wait for the Compute certificate to become `ACTIVE`, smoke-test HTTPS, and apply the redirect overlay. It waits for every rollout/reconciliation gate and never substitutes an empty string for a required token. Teardown keeps the gateway impersonation policy until all other Gateway-driven Kubernetes cleanup is complete, then uses a fresh ephemeral DNS-endpoint kubeconfig to remove the gateway policy and namespaces without asking the gateway to delete its own authorization.
+Keep HPA and regional-failover exercises out of normal deployment. `verify.sh hpa --region us-central1 --confirm "HPA us-central1"` and `verify.sh failover --region us-east1 --confirm "FAILOVER us-east1"` require exact confirmation, use bounded timeouts, and restore committed workloads with a `trap` even after interruption. Label both as controlled application exercises, not cluster-outage claims.
 
-- [ ] **Step 7: Implement live verification without optimistic skips**
+- [ ] **Step 5: Implement destructive teardown**
 
-`verify.sh all` fails unless it proves both Fleet memberships healthy; three Ready replicas per app/cluster; MCI/MCS resources reconciled; backend health is non-empty; required BigQuery log classes/tables appear and bounded queries execute; Grafana health, three dashboards, and both datasource health checks succeed; no Google key file is mounted. Every BigQuery data query first performs a dry run and then executes with UTC timestamp parameters plus `--maximum_bytes_billed=1073741824`; schema metadata discovery is the documented bounded-cost exception. It proves the App A CSI path exists and is non-empty without reading its content and App B has no secret volume.
+Before mutation, `teardown.sh` checks it is running from `main`, requires the dispatched project ID to equal `GCP_PROJECT_ID`, and requires `--confirmation "DESTROY <project-id>"`. It deletes Kubernetes MCI/MCS/workloads first, waits for managed load-balancer cleanup, then destroys platform and foundation in that order. It refuses bootstrap directories/state targets and reports retained bootstrap state, WIF, deployer identity, and state bucket separately from deleted assessment resources.
 
-For IAM, it distinguishes inheritance correctly: each secret-level policy contains only its expected runtime accessor binding, while the project policy contains the documented `assessment-deployer` Secret Manager Admin grant needed for initialization and no other Terraform-managed secret-access principal. It never claims the runtime GSA is the only effective accessor. A live negative test executes a non-echoing shell inside one App A Pod: it obtains its metadata-server token entirely inside the container, accesses `app-a-demo` with the response discarded to `/dev/null`, then requires access to `grafana-admin` to fail. Neither token nor either secret response crosses `kubectl exec`, enters argv, or appears in evidence; only the two exit classifications are recorded. Image compatibility validation proves the pinned App A image contains the required shell, `envsubst`, and HTTPS-capable `wget` before this contract is accepted.
-
-For authenticated Grafana API checks it reads `grafana-admin` into a mode-0600 temporary netrc file, registers the value with GitHub masking without logging it, keeps it out of argv/artifacts, and deletes it through a trap. With HTTPS disabled, HTTP `/app-a` and `/app-b` must each return `200`. With HTTPS enabled, HTTP must return the configured redirect status and location while HTTPS `/app-a` and `/app-b` each return `200`; certificate or redirect failure is fatal. Evidence is redacted and timestamped.
-
-`scripts.lib.live_drills` supplies a bounded Python HTTP load generator that uses standard-library clients, caps concurrency and duration, discards bodies, records status and error counts only, and always stops workers on cancellation. `verify.sh hpa-drill --region us-central1` first requires three Ready Pods for each app and Connect Gateway streaming support, then opens one loopback-only `kubectl port-forward` to each of those six Pods using OS-selected local ports. This distributes load across all baseline Pods and deliberately bypasses the public load balancer's per-client Cloud Armor throttle; the drill is HPA evidence, not ingress-capacity evidence. It registers termination of every port-forward and load worker before starting load, drives both apps for at most ten minutes, and requires each selected-cluster HPA to exceed desired replica count three plus the corresponding Deployment to reach that desired Ready count. It then stops load and waits at most ten additional minutes for both HPAs and Deployments to return to the three-replica floor. A streaming, scale-up, or restoration timeout is failure evidence, not a skip.
-
-`verify.sh regional-failover-drill --failed-region REGION --confirmation "FAILOVER REGION"` accepts only one of the two known regions and requires that exact confirmation. It registers a restoration trap first, records both clusters healthy, deletes only App A and App B Deployments in the chosen region, and waits until that region has no Ready app endpoints while the other region retains three Ready replicas for both apps. Because MCI and NEG health propagation is asynchronous, it next polls the underlying backend-health view with a bounded timeout until the failed region's backends are unhealthy or absent and the surviving region's backends are healthy; a terminal error or convergence timeout fails before traffic assertions. Only then does it require five new-connection requests to each global route to succeed. Those successes demonstrate service from the surviving region after the load balancer has observed the failure, rather than relying on optimistic timing. The trap reapplies the committed rendered regional overlay, waits for three Ready replicas and Ready endpoints for both apps, and requires MCI backend health to return healthy even on interruption or assertion failure. Evidence records the failed and surviving regions, pre-failure state, endpoint absence, bounded backend-health convergence, HTTP results, and restored state without response bodies or credentials. This is a controlled application-data-plane exercise, not a destructive cluster-outage claim.
-
-- [ ] **Step 8: Implement guarded teardown**
-
-`teardown.sh` requires main GitHub context unless an explicit local override, project equality, state bucket, and exact confirmation. Through Connect Gateway it deletes MCI/MCS/FrontendConfig/BackendConfig, waits with a bounded timeout for managed LB/backend cleanup, and removes cluster workloads. It then creates a new mode-0600 temporary kubeconfig, registers cleanup immediately, and for each exact cluster/region pair runs the same `KUBECONFIG="$ephemeral_kubeconfig" gcloud container clusters get-credentials "$cluster_name" --location "$region" --project "$GCP_PROJECT_ID" --dns-endpoint` contract before removing the gateway impersonation/RBAC objects and namespaces. Only then does it destroy platform and foundation.
-
-Residual discovery inventories clusters, Fleet features/memberships, forwarding rules, target proxies, URL maps, backend services, health checks, NEGs, MCI-generated and Terraform firewall rules, addresses, SSL certificates/policies, Cloud Armor policies, VPC/subnets/routers/NAT, managed DNS zones/records, logging sinks, BigQuery datasets, secret containers, runtime/node service accounts, and the `foundation`/`platform` state prefixes. It proves each current non-bootstrap state contains zero managed resources; versioned empty-state history is expected recovery metadata, not a live cloud-resource leak. Foundation APIs deliberately use `disable_on_destroy = false`, so these read-only discovery calls remain available after destroy. The report labels enabled APIs and their Google-managed service agents, the empty project Fleet container, retained state history, bootstrap bucket/prefix, WIF pool/provider, deployer service account/project roles, and bootstrap APIs as expected non-workload state. Any other assessment-owned resource fails the residual check. The script refuses any bootstrap destroy target, prefix, or directory.
-
-- [ ] **Step 9: Verify scripts and commit**
-
-```bash
-python3 -m pytest tests/unit/test_live_drills.py tests/repository/test_script_contracts.py -q
-shellcheck scripts/*.sh
-bash -n scripts/*.sh
-```
-
-Expected: PASS; fake-command logs prove rejected paths mutate nothing.
-
-```bash
-git add scripts tests/unit/test_live_drills.py tests/repository/test_script_contracts.py
-git commit -m "feat: add guarded platform lifecycle scripts"
-```
-
-### Task 4: Credential-free validation and protected lifecycle workflows
-
-**Files:**
-- Create: `.github/workflows/{validate,deploy,teardown}.yml`, `.github/CODEOWNERS`, `.github/dependabot.yml`
-- Create: `scripts/lib/workflows.py`
-- Create: `tests/repository/{test_action_pins.py,test_workflow_security.py}`
-
-**Interfaces:**
-- Consumes Make targets and script CLIs from Tasks 1-3 plus Terraform/Kubernetes plan contracts.
-- Produces exactly three workflows and immutable Action references.
-
-- [ ] **Step 1: Write failing Action-pin tests**
-
-```python
-USES = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
-
-
-def test_every_external_action_is_immutable():
-    for path in Path(".github/workflows").glob("*.yml"):
-        workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
-        for reference in collect_uses(workflow):
-            if reference.startswith("./"):
-                continue
-            assert USES.fullmatch(reference), f"mutable Action reference: {reference}"
-```
-
-- [ ] **Step 2: Write failing permission/trigger tests**
-
-Assert validate triggers only PR/push-to-main/manual, top permission is exactly contents read, and raw text has no `id-token`, `secrets.`, `pull_request_target`, `terraform plan`, or `terraform apply`. Assert deploy/teardown trigger only dispatch, guard main, use the expected environments, set `id-token: write` only in authenticated jobs, share one service-account variable, use the same non-cancelling concurrency group, and give every Google auth step exact `workload_identity_provider`, `service_account`, and `audience: https://iam.googleapis.com/${{ vars.GCP_WIF_PROVIDER }}` inputs. Require `run_live_drills` to be a boolean defaulting to false and require both guarded drill commands only behind that exact condition. Assert no uploaded path contains a Terraform plan.
-
-- [ ] **Step 3: Run and prove workflows are absent**
-
-Run: `python3 -m pytest tests/repository/test_action_pins.py tests/repository/test_workflow_security.py -q`
-
-Expected: FAIL because no workflows exist.
-
-- [ ] **Step 4: Add approved immutable Action references**
-
-Use these full pins only:
-
-```text
-actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
-actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
-```
-
-Dependabot opens reviewed GitHub Actions and pip update PRs; it never auto-merges.
-
-- [ ] **Step 5: Implement `validate.yml`**
-
-PR/push-to-main/manual workflow, `permissions: contents: read`, pinned checkout/setup-python/upload, `pip --require-hashes`, `make tools`, `make validate`, and upload only `artifacts/validate/` with 30-day retention. Kind runs on a Docker-capable hosted runner. It has no GCP auth action, environment, secret, OIDC, Terraform plan, or deployment command.
-
-- [ ] **Step 6: Implement staged `deploy.yml`**
-
-Use concurrency `gke-assessment-production`, `cancel-in-progress: false`, and this dependency graph:
-
-```text
-validate-account-free
-  -> plan-foundation [production-plan]
-  -> apply-foundation [production]
-  -> plan-platform [production-plan]
-  -> apply-platform-deliver-verify [production]
-  -> live-drills [production, conditional]
-```
-
-Each authenticated job has only `contents: read` and `id-token: write`, authenticates with provider `${{ vars.GCP_WIF_PROVIDER }}`, service account `${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}`, and explicit audience `https://iam.googleapis.com/${{ vars.GCP_WIF_PROVIDER }}`. It requests a one-hour service-account access token and creates an ephemeral ADC file. The pinned setup-gcloud Action installs gcloud 582.0.0 plus its matching `gke-gcloud-auth-plugin`; Kubernetes jobs set `USE_GKE_GCLOUD_AUTH_PLUGIN=True` and `gcloud config set container/use_application_default_credentials true` in an ephemeral Cloud SDK configuration before generating kubeconfigs. Parser tests require those inputs and settings. Plan jobs expose fingerprints and redacted summaries as job outputs/step summaries. Apply jobs recompute/compare before apply. The apply/deliver/verify job initializes missing secret versions, deploys through Connect Gateway, verifies, and uploads only redacted evidence.
-
-A typed boolean `run_live_drills` dispatch input defaults to `false`. When explicitly true, a separate dependent `live-drills` job obtains a fresh OIDC/ADC session, runs `hpa-drill --region us-central1`, then runs `regional-failover-drill --failed-region us-east1 --confirmation "FAILOVER us-east1"`, and uploads its redacted restoration evidence. Separating the potentially long drills avoids relying on credentials minted before infrastructure reconciliation. A normal first deploy remains non-disruptive, while one explicit re-dispatch can collect the two additional evidence classes.
-
-The workflow passes `TF_STATE_BUCKET` to every Terraform script call and maps the six defaulted configuration variables plus optional non-empty DNS variables into the script environment. Parser tests require the same mapping in plan and apply jobs so a reviewed plan cannot use different HTTPS, DNS, or team-IAM inputs from its apply.
-
-- [ ] **Step 7: Implement `teardown.yml`**
-
-Manual inputs `project_id` and `confirmation`; main/project/confirmation guards run before auth. Use environment `teardown`, the production concurrency group, the same WIF identity with the same explicit canonical audience, and `scripts/teardown.sh`. Upload only redacted residual-resource evidence. Bootstrap state and trust are explicitly excluded.
-
-- [ ] **Step 8: Add CODEOWNERS and verify**
-
-CODEOWNERS assigns `.github/workflows/`, `infra/`, `k8s/`, `policy/`, `scripts/`, and security/ADR docs to `@kamrank89`, matching the configured GitHub remote owner. `configure-github.sh` accepts a future `--codeowner` override if the repository is transferred before bootstrap.
+- [ ] **Step 6: Run only static script checks**
 
 Run:
 
 ```bash
-python3 -m pytest tests/repository/test_action_pins.py tests/repository/test_workflow_security.py -q
-yamllint .github/workflows .github/dependabot.yml
+bash -n scripts/*.sh
+shellcheck scripts/*.sh
+make validate-shell
 ```
 
-Expected: PASS.
+Expected: scripts pass static checks. Do not execute bootstrap, deployment, verification, drills, teardown, `gcloud`, or `bq` while implementing this plan.
+
+- [ ] **Step 7: Commit lifecycle scripts**
 
 ```bash
-git add .github scripts/lib/workflows.py tests/repository/test_action_pins.py tests/repository/test_workflow_security.py
-git commit -m "ci: add keyless protected lifecycle workflows"
+git add Makefile scripts/render-manifests.sh scripts/bootstrap.sh scripts/configure-github-variables.sh scripts/deploy.sh scripts/verify.sh scripts/teardown.sh
+git commit -m "feat: add guarded deployment lifecycle scripts"
 ```
 
-### Task 5: Requirements, architecture, ADRs, security, operations, and setup documentation
+### Task 3: Add credential-free CI and manual lifecycle workflows
 
 **Files:**
-- Move unchanged: `docs/requirments.md` -> `docs/requirements/assessment-source.md`
-- Create: every documentation file listed in the file structure except evidence files handled in Task 6
-- Create: `tests/repository/{test_documentation_contract.py,test_traceability_contract.py}`
+- Create: `.github/workflows/{validate,deploy,teardown}.yml`, `.github/dependabot.yml`
+- Modify: `Makefile`, `scripts/{deploy,verify,teardown}.sh`
 
 **Interfaces:**
-- Produces traceability rows with columns `ID`, `Requirement`, `Implementation`, `Account-free test`, `Live verification`, `Evidence`, and `Status`.
-- Produces stable requirement IDs `RQ-001` onward and ADR statuses `Accepted` or `Accepted for assessment; production migration recommended`.
+- `validate.yml` invokes `make tools` and `make validate` without Google authentication.
+- `deploy.yml` offers boolean `run_hpa_drill` and `run_failover_drill` inputs, both defaulting to `false`; it calls the deployment script and then `verify.sh smoke`.
+- `teardown.yml` requires `project_id` and `confirmation` dispatch inputs before it calls the teardown script.
 
-- [ ] **Step 1: Write failing documentation inventory and link tests**
+- [ ] **Step 1: Implement `validate.yml`**
 
-```python
-def test_required_document_inventory_exists():
-    missing = [path for path in REQUIRED_DOCS if not Path(path).is_file()]
-    assert missing == []
+Trigger only on `pull_request` and `push` to `main`, and set:
 
-
-def test_internal_markdown_links_resolve():
-    for source, target in collect_internal_links(Path("docs")):
-        assert target.exists(), f"{source} links to missing {target}"
+```yaml
+permissions:
+  contents: read
 ```
 
-- [ ] **Step 2: Write failing traceability tests**
+Use full-SHA-pinned `actions/checkout`, run `make tools`, `make validate`, and `make validate-images`. This workflow has no `id-token: write`, `gcloud`, `bq`, credential, environment, Terraform plan/apply, or deployment command. If retaining reports, upload only rendered manifests and non-sensitive lint/scan results; never upload plans, state, generated kubeconfig, or live evidence.
 
-Parse the Markdown table and require unique sequential `RQ-NNN` IDs, non-empty implementation/test/live/evidence cells, only allowed status values, and coverage tokens for project, VPC/NAT/flow logs/private access, both Autopilot regions, Fleet/MCI/MCS, both apps/four placements, three replicas/HPA/PDB, routing/failover, Cloud Armor, Secret Manager/WI, four BigQuery log classes, BigQuery, four overview panels, three dashboards, Terraform states, OIDC, workflows, troubleshooting, DNS/TLS, rollback, teardown, cost, Trace, Profiler, and Error Reporting.
+- [ ] **Step 2: Implement `deploy.yml`**
 
-- [ ] **Step 3: Run and prove the inventory is incomplete**
+Use `workflow_dispatch` only, guard `github.ref == 'refs/heads/main'`, and use a non-cancelling production concurrency group. Each privileged job authenticates using a full-SHA-pinned Google auth Action with `${{ vars.GCP_WIF_PROVIDER }}`, the same `${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}`, and audience `https://iam.googleapis.com/${{ vars.GCP_WIF_PROVIDER }}`. Immediately afterward, a full-SHA-pinned `google-github-actions/setup-gcloud` step installs version `582.0.0` with components `gke-gcloud-auth-plugin,bq`. Set `CLOUDSDK_CORE_PROJECT=${{ vars.GCP_PROJECT_ID }}` and `USE_GKE_GCLOUD_AUTH_PLUGIN=True` before any `gcloud`, `bq`, or Kubernetes command. The ordered workflow is:
 
-Run: `python3 -m pytest tests/repository/test_documentation_contract.py tests/repository/test_traceability_contract.py -q`
+```text
+credential-free validation
+  -> deploy foundation
+  -> deploy platform and workloads
+  -> smoke verification, including BigQuery SQL dry runs
+  -> optional HPA drill
+  -> optional regional-failover drill
+```
 
-Expected: FAIL listing missing documents and traceability rows.
+Each drill runs only when its boolean dispatch input is true and passes the exact script confirmation. Upload only redacted results. Baseline jobs do not reference a GitHub Environment because that would change the OIDC subject. The hardening guide explains that adopting protected Environments requires adding their exact subjects to the WIF condition before changing the workflows.
 
-- [ ] **Step 4: Preserve the assessment source**
+- [ ] **Step 3: Implement `teardown.yml`**
 
-Copy the current bytes, verify with `cmp`, then remove only the misspelled copy:
+Use `workflow_dispatch` only, require `project_id` and `confirmation`, guard `main` before authentication, use the deploy concurrency group and the same OIDC identity/audience, install Google Cloud CLI 582.0.0 and `gke-gcloud-auth-plugin` through the same pinned setup action, then invoke `scripts/teardown.sh`. A separate protected `teardown` environment and approval are recommended production hardening; adopting it also requires adding its exact subject to the WIF condition. Upload only the redacted cleanup report.
+
+- [ ] **Step 4: Pin dependencies and lint workflows**
+
+Pin every third-party `uses:` value to a 40-character commit SHA. Add Dependabot only for GitHub Actions updates; it opens reviewable pull requests and does not auto-merge. Do not add a Python setup action, pip dependencies, custom workflow parser, or workflow-text contract test.
+
+Run:
+
+```bash
+actionlint .github/workflows/*.yml
+yq eval '.' .github/workflows/validate.yml >/dev/null
+yq eval '.' .github/workflows/deploy.yml >/dev/null
+yq eval '.' .github/workflows/teardown.yml >/dev/null
+make validate
+```
+
+Expected: standard credential-free checks pass. Manually inspect the workflow files for dispatch-only deployment/teardown, one federated identity, no static cloud credential, and default-disabled drills.
+
+- [ ] **Step 5: Commit workflow automation**
+
+```bash
+git add .github/workflows/validate.yml .github/workflows/deploy.yml .github/workflows/teardown.yml .github/dependabot.yml
+git commit -m "ci: add OIDC deployment lifecycle workflows"
+```
+
+### Task 4: Write deploy-ready documentation, traceability, and honest evidence status
+
+**Files:**
+- Move unchanged: `docs/requirments.md` to `docs/requirements/assessment-source.md`
+- Create: all documentation files listed in File Structure
+- Modify: `README.md`
+
+**Interfaces:**
+- `docs/requirements/traceability.md` maps each assessment requirement to implementation path, account-free validation command, future live verification, evidence destination, and current status.
+- `docs/evidence/status.md` uses `verified-account-free`, `deployment-evidence-pending`, and `not-applicable` until a real authorized run completes a row from `live-evidence-template.md`.
+- `README.md` provides the shortest safe operator path and links to detailed guides.
+
+- [ ] **Step 1: Preserve requirements and create traceability**
+
+Copy the supplied source byte-for-byte, verify it, then remove the misspelled source path:
 
 ```bash
 cmp docs/requirments.md docs/requirements/assessment-source.md
 ```
 
-The assessment source receives a short adjacent README/note, not edits inside the supplied text, explaining that it is source requirements rather than executable instructions.
+Create a traceability table covering both GKE regions, both applications and the three-replica/HPA baseline, MCI/MCS/global routing/failover, Cloud Armor, Workload Identity/Secret Manager, BigQuery logging, Grafana and four overview panels, Terraform, OIDC workflows, troubleshooting, cost, deployment, and teardown. Each row distinguishes a static command from a live-only command and begins in an honest status.
 
-- [ ] **Step 5: Write architecture and setup guides**
+- [ ] **Step 2: Document architecture and decisions**
 
-Use Mermaid diagrams for system topology, customer path, observability flow, identity/delivery, state boundaries, and teardown order. Setup guides contain exact named `make bootstrap` variables, bootstrap flags, every required/default/optional GitHub variable and its Terraform mapping, staged deployment, HTTP-first verification, optional DNS/certificate/redirect, live verification, opt-in HPA/failover drills with restoration, and teardown. They state that the checked-in/default configuration deploys HTTP with empty team lists, so after the one-time account/bootstrap trust step no source edit is required; DNS/TLS is an explicit later configuration change. Every command labels whether it is account-free, creates cost, generates load, deliberately removes a regional workload, reads protected data, or destroys resources.
+Write topology, traffic, observability, Terraform-state-boundary, and delivery/identity diagrams. Record ADRs for Autopilot, rubric-first MCI/MCS plus future multi-cluster Gateway API migration, one `assessment-deployer` OIDC identity, and digest-pinned public images/Secret Manager. Explain the single-identity blast-radius trade-off and recommend production role separation without claiming it exists.
 
-The network documentation must distinguish Private Google Access from Private Service Access. Enable Private Google Access on both subnets because private nodes need Google APIs; do not create a producer peering allocation because this assessment has no managed producer service that consumes Private Service Access. Record the allocation/peering as a future prerequisite if Cloud SQL, Memorystore, or another supported private-service producer is introduced.
+Document the HTTP-first verification path, optional owned-domain DNS/TLS path, Cloud Armor, private GKE/Fleet access, Grafana's recoverable primary-cluster role, partition-bounded BigQuery queries, and the third-party-image limits for Trace, Profiler, and Error Reporting. Include cost controls and billable components without presenting the architecture as free tier.
 
-Explain why there are two workload subnets rather than artificial load-balancer and monitoring subnets: the global external Application Load Balancer/MCI proxies are Google-managed and do not consume a proxy-only subnet in this design, while Grafana is an internal pod workload in the primary cluster. A separate proxy-only subnet becomes relevant for regional managed-proxy load balancers, not this global MCI baseline.
+- [ ] **Step 3: Document setup, hardening, and operation**
 
-The customer-traffic guide corrects the source document's generic ingress-controller hop for this selected implementation: the MCI controller is a reconciliation component that programs the global external Application Load Balancer and zonal NEGs; request data travels from the Google edge directly to healthy Pod endpoints through the VPC, not through a separately deployed NGINX or GKE Ingress proxy Pod. App A's NGINX process is the assessed application container, not an ingress controller.
+Provide exact future commands for account-free validation, installing Google Cloud CLI 582.0.0 with `gke-gcloud-auth-plugin` and `bq`, human bootstrap, variable configuration, manual deployment, smoke verification, optional drills, rollback, and teardown. Mark every cloud-mutating command and describe cost impact. Explain that DNS is optional for HTTP verification but required for a managed-certificate/HTTPS path.
 
-- [ ] **Step 6: Write all eleven ADRs**
+In `docs/setup/github.md`, recommend protecting `main`, requiring the `validate` check, CODEOWNERS, protected `production`/`teardown` environments, reviewers, prevent-self-review, and deployment-branch restrictions. Explain that changing jobs from the baseline branch subject to Environment subjects requires updating the Terraform WIF allowlist first. These are a production governance checklist, not bespoke prerequisite automation.
 
-Each ADR contains Context, Decision, Consequences, Alternatives, Production evolution, and primary references. The single-identity ADR explicitly explains the assessment simplification, union-of-permissions limitation, compensating controls, and recommended planner/infrastructure/workload/teardown identity split. The MCI ADR includes exact migration: ServiceExport/ServiceImport, Gateway/HTTPRoute under a new hostname/IP, GCPBackendPolicy/HealthCheckPolicy, acceptance/failover/TLS tests, DNS shift, rollback window, then MCI removal.
+Cover OIDC/WIF bootstrap, no-key policy, state handling, image/digest scanning, Secret Manager runtime mounting, Grafana access, rollout/rollback, controlled scaling/failover, DNS/TLS troubleshooting, and reverse-order teardown. Include the planned controlled readiness-probe exercise—symptom, diagnosis, correction, expected recovery, prevention—and label it accurately until executed.
 
-- [ ] **Step 7: Write security and operations guides**
+- [ ] **Step 4: Complete the evidence model without fabricating claims**
 
-Threat model covers GitHub issuer multi-tenancy, malicious PRs, broad single identity, Terraform state, image and Grafana-plugin supply chain, public ingress, IAM-authorized external DNS control-plane endpoints, secrets, logs, Grafana admin access, and teardown. IAM matrix lists every human/pipeline/runtime principal and scope. Explain that IP endpoints remain disabled: the DNS endpoint is reachable so a hosted runner can perform the automated initial Gateway-RBAC bootstrap, but every request still authenticates and authorizes through Google IAM/GKE. Operations covers rollout/rollback, emergency `rollout undo` plus Git reconciliation, scaling, controlled failover, secret rotation, Grafana use, MCI config-cluster loss, state recovery, and data-plane versus reconciliation behavior. Explain that sampled VPC Flow Logs and NAT error logs stay in Cloud Logging but outside the cost-bounded BigQuery sink. In this non-Shared-VPC baseline the MCI controller manages the required health-check/firewall integration in the cluster project; its generated firewall rules are not falsely described as Terraform-owned or as having configurable rule logging. A future Shared VPC design must delegate firewall administration or pre-create the documented health-check rules in the host project.
+`docs/evidence/checklist.md` lists post-deployment collection: cluster/Fleet readiness, six ready replicas per application across both regions, MCI backend health, HTTP/optional HTTPS, HPA/failover drill output only when deliberately run, BigQuery dry-run/query output, Grafana export or screenshot, and teardown/residual report. `live-evidence-template.md` requires UTC time, commit SHA, workflow URL, actor/reviewer, redaction note, command, result, and artifact location before a record may become `verified-live`.
 
-The disaster-recovery guide states that both assessed apps are stateless and reconstructed from Terraform/Kustomize, GKE owns Autopilot control-plane recovery, and there is no database or Artifact Registry to back up in this baseline. It records Backup for GKE, owned image mirroring, and stateful-service backups as explicit production additions rather than claiming nonexistent etcd, database, or registry backup jobs.
+Initialize `status.md` only with account-free results actually run; all cloud-dependent rows are `deployment-evidence-pending`. Committed Grafana dashboard JSON satisfies the assessment's export alternative without inventing a live screenshot.
 
-- [ ] **Step 8: Write observability, cost, references, and interview guide**
+- [ ] **Step 5: Review documentation and clean repository state**
 
-Explain table materialization/schema drift, each SQL query, each panel, metadata auth inference requiring live smoke, Trace/Profiler absence of app instrumentation, Error Reporting dependency on compatible exceptions, and no fabricated values. Cost model includes the 12-backend-pod MCI minimum of about $36/month plus compute/LB/NAT/logging/BigQuery/DNS. Interview guide includes a five-minute walkthrough, each trade-off, likely objections, troubleshooting demo, costs, production evolution, and concise answers tied to ADRs.
-
-- [ ] **Step 9: Verify and commit docs**
+Run:
 
 ```bash
-python3 -m pytest tests/repository/test_documentation_contract.py tests/repository/test_traceability_contract.py -q
-python3 scripts/validate.py docs --out artifacts/docs
+make validate
+git diff --check
+find . -type f \( -name '*.tfplan' -o -name '*.tfstate' -o -name '*.pem' -o -name '*service-account*.json' -o -name 'kubeconfig*' \) -not -path './.git/*' -print
 ```
 
-Expected: PASS with no broken internal links or uncovered acceptance item.
+Expected: validation and whitespace checks pass; the final command prints no generated plan, state, key, service-account credential, or kubeconfig.
+
+- [ ] **Step 6: Commit documentation and the requirements move**
 
 ```bash
-git add docs README.md tests/repository/test_documentation_contract.py tests/repository/test_traceability_contract.py
+git add README.md docs
 git add -u docs/requirments.md
 git commit -m "docs: add assessment operations and decision record"
 ```
 
-### Task 6: Honest evidence model, top-level README, and integrated validation
+## Cross-Plan Interface Changes
 
-**Files:**
-- Create: `docs/evidence/{checklist.md,status.md,deployment-evidence-template.md,residual-resource-check.md}`
-- Create: `tests/repository/test_evidence_status.py`
-- Finalize: `README.md`, `Makefile`, `scripts/validate.py`
-
-**Interfaces:**
-- Consumes every subsystem check ID and traceability row.
-- Produces `artifacts/validate/summary.json`, `summary.md`, rendered manifests, dashboard inventory, SQL inventory, image reports, tool versions, and local drill evidence.
-
-- [ ] **Step 1: Write the failing evidence-status test**
-
-```python
-ALLOWED = {"verified-account-free", "deployment-evidence-pending", "verified-live", "not-applicable"}
-
-
-def test_evidence_statuses_are_honest_and_complete():
-    rows = parse_status_table(Path("docs/evidence/status.md"))
-    assert rows
-    assert {row.status for row in rows} <= ALLOWED
-    assert all(row.command and row.evidence_path for row in rows)
-    for row in rows:
-        if row.status == "verified-live":
-            assert row.utc_timestamp.endswith("Z")
-            assert re.fullmatch(r"[0-9a-f]{40}", row.commit_sha)
-            assert row.workflow_url.startswith("https://github.com/")
-            assert row.redaction_note
-            assert row.artifact_path and ".." not in Path(row.artifact_path).parts
-
-
-def test_initial_repository_has_no_unsubstantiated_live_claim():
-    rows = parse_status_table(Path("docs/evidence/status.md"))
-    assert all(row.status != "verified-live" or row.has_complete_live_record for row in rows)
-```
-
-- [ ] **Step 2: Run and observe the missing status file**
-
-Run: `python3 -m pytest tests/repository/test_evidence_status.py -q`
-
-Expected: FAIL reading `docs/evidence/status.md`.
-
-- [ ] **Step 3: Create the evidence taxonomy**
-
-Status rows cover every traceability requirement. Account-free rows cite exact Make/pytest commands and committed exports; cloud/Fleet/MCI/public endpoint/failover/HPA/live BQ/live Grafana/TLS/IAM/teardown rows are pending. The live template requires command, UTC timestamp, commit SHA, workflow URL, actor/reviewer, redaction note, result, and artifact path before a status may change to verified-live.
-
-- [ ] **Step 4: Finalize the top-level operator path**
-
-README begins with scope and honest deployment status, then the shortest safe path: `make venv`, `make tools`, `make validate`; review cost; run future bootstrap; configure environment reviewers; dispatch deployment; verify; collect evidence; dispatch teardown. It links architecture, traceability, ADRs, interview guide, and limitations and states clearly that implementation never deployed resources.
-
-- [ ] **Step 5: Run every account-free gate**
-
-```bash
-make test-unit
-make test-terraform
-make test-k8s
-make test-observability
-make test-repository
-make docs-check
-make validate-network
-make test-kind
-make validate
-```
-
-Expected: all required checks pass from fresh output. `summary.json` records no GCP credential use and no verified-live row.
-
-- [ ] **Step 6: Verify no plan/key/secret artifact exists**
-
-```bash
-find . -type f \( -name '*.tfplan' -o -name '*.pem' -o -name '*service-account*.json' -o -name 'kubeconfig*' \) -not -path './.git/*' -print
-git diff --check
-```
-
-Expected: the find command prints nothing and whitespace check passes.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add README.md Makefile scripts/validate.py docs/evidence tests/repository/test_evidence_status.py
-git commit -m "test: add complete account-free evidence gate"
-```
+- The infrastructure plan must expose non-secret bootstrap outputs for `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `GCP_WIF_PROVIDER`, `GCP_DEPLOYER_SERVICE_ACCOUNT`, and `TF_STATE_BUCKET`; this plan writes and consumes them as GitHub repository variables.
+- Terraform roots remain the only cloud-resource source and use only native `*.tftest.hcl` tests. This plan removes Python, pip/pytest, plan-fingerprint summaries, evidence parsers, fake-cloud helpers, and broad repository-contract test suites from the delivery interface; one small Bash manifest renderer remains a deployment function.
+- The Kubernetes plan provides `k8s/access/*`, `k8s/overlays/us-central1`, `k8s/overlays/us-east1`, and `k8s/overlays/config-us-central1/*`, including narrow pipeline RBAC, MCI/MCS, and digest-pinned application images. This plan builds and schema-validates those overlays, applying them only in a future manual workflow.
+- The observability plan provides Grafana dashboard JSON under `k8s/base/grafana/files/dashboards/` and BigQuery SQL under `observability/bigquery/queries/`. Pre-deploy checks validate dashboard JSON only; `bq query --dry_run --use_legacy_sql=false` runs only after OIDC in post-deploy smoke verification.
+- Operations use small Bash entry points and Make, not a custom framework. Deployment/teardown remain manually dispatched with one OIDC-federated identity. Protected environments and branch protection are documented recommendations; destructive teardown confirmation is still enforced.
 
 ## Live-Only Boundary
 
-The workflows and scripts are testable with fake commands and static parsers, but their cloud behavior remains unproven until an authorized future run. Before a GCP account, do not claim a Terraform plan/apply, state lock, cluster/Fleet readiness, Connect Gateway access, MCI health, public endpoint, failover, HPA response, BigQuery rows/schema, Grafana datasource/rendered values, secret mount, IAM denial, certificate, screenshot, teardown, or residual-resource result. The committed dashboard JSON satisfies the assessment's export alternative without fabricating a screenshot.
+Until an authorized manual deployment is recorded, the repository may claim only completed account-free checks. It must not claim a cloud Terraform plan/apply, state lock, cluster/Fleet readiness, Fleet access, MCI backend health, public endpoint, certificate, HPA response, failover, BigQuery result, Grafana health, Secret Manager mount, IAM behavior, screenshot, teardown, or residual-resource result. Record each only through the live-evidence template after redaction.

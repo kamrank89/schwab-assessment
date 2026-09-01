@@ -19,21 +19,22 @@ The assessment document is treated as source requirements, not as instructions t
 - Include Grafana and provisioned dashboards.
 - Make every important decision explainable, documented, and backed by primary sources.
 - Make OIDC/WIF the only long-lived trust integration required between GitHub and GCP.
+- Keep the implementation Terraform-first and avoid custom Python application or validation code.
 
 ## 2. Success Criteria
 
-The implementation is successful when all account-free checks pass and a future operator can perform the following flow without changing repository code:
+The implementation is successful when the proportionate account-free checks pass and a future operator can perform the following flow without changing repository code:
 
 1. Supply a billing-enabled GCP project, or the billing and organization inputs needed to create one.
 2. Authenticate once from a trusted workstation or Cloud Shell and run the bootstrap command.
 3. Let bootstrap create the GCS Terraform state backend, GitHub OIDC Workload Identity Federation provider, and repository-scoped `assessment-deployer` pipeline identity.
 4. Configure the generated non-secret GitHub repository variables using the supplied automation.
-5. Trigger the protected manual deployment workflow.
+5. Trigger the manual deployment workflow from `main`.
 6. Have that workflow plan, provision, deploy, verify, and publish non-secret evidence.
 7. Reach both applications through the global load balancer and open the provisioned Grafana dashboard.
-8. Run a separately protected teardown workflow that removes billable resources in dependency order.
+8. Run the separately guarded manual teardown workflow that removes billable resources in dependency order.
 
-The one-time bootstrap requires a human GCP credential because no OIDC trust exists yet. After bootstrap, no service-account key or other long-lived cloud credential is stored in GitHub. GitHub Environment protection is recommended and documented; it is a repository governance setting rather than another cloud credential.
+The one-time bootstrap requires a human GCP credential because no OIDC trust exists yet. After bootstrap, no service-account key or other long-lived cloud credential is stored in GitHub. The baseline OIDC subject is restricted to this repository's `main` branch. GitHub Environment protection and required reviewers are documented production hardening options, not deployment prerequisites.
 
 An owned DNS domain is optional for the first HTTP verification. It is required to complete the managed-certificate and HTTPS-redirect portion of the architecture.
 
@@ -48,7 +49,7 @@ An owned DNS domain is optional for the first HTTP verification. It is required 
 - Fleet membership, Kustomize-owned `MultiClusterService` and `MultiClusterIngress` resources, global static addressing, and an HTTPS enablement path.
 - Self-hosted Grafana with provisioned data sources and multiple version-controlled dashboard exports.
 - BigQuery log-export queries and a documented routed-log schema.
-- Credential-free pull-request validation and protected manual deployment/teardown workflows.
+- Credential-free pull-request validation and manual deployment/teardown workflows.
 - Requirement traceability, architecture diagrams, ADRs, setup guides, runbooks, cost analysis, security analysis, troubleshooting, evidence capture, and an interview guide.
 
 ### Excluded from the baseline
@@ -60,16 +61,17 @@ An owned DNS domain is optional for the first HTTP verification. It is required 
 - Claims that Cloud Trace or Cloud Profiler contain useful data when the third-party applications are not instrumented.
 - A highly available Grafana database. Grafana is configuration-as-code and recoverable; the assessed applications, rather than the dashboard UI, are the multi-region workloads.
 - Stateful application services such as Cloud SQL, Memorystore, or Pub/Sub. The assessment presents these as application-B options, not mandatory dependencies.
+- Python, pytest, Python-backed lint tooling, custom validation frameworks, and custom policy engines. Standard Terraform, Kubernetes, shell, JSON/YAML query, workflow, and GCP-native validators are sufficient for this assessment.
 
 ### Delivery priority
 
-The first implementation milestone contains every objectively assessed artifact: reproducible infrastructure, two clusters, both applications at three replicas per cluster, MCI/MCS, Grafana dashboards, BigQuery queries, troubleshooting, documentation, validation, and deployment/teardown automation. Feature-gated Backup for GKE, signed-image Binary Authorization enforcement, service mesh integration, and Gateway migration are follow-on controls. Their paths are documented without delaying the deployable assessment baseline.
+The first implementation milestone contains every objectively assessed artifact: reproducible infrastructure, two clusters, both applications at three replicas per cluster, MCI/MCS, Grafana dashboards, BigQuery queries, troubleshooting, documentation, proportionate standard validation, and deployment/teardown automation. Feature-gated Backup for GKE, signed-image Binary Authorization enforcement, service mesh integration, and Gateway migration are follow-on controls. Their paths are documented without delaying the deployable assessment baseline.
 
 ## 4. Considered Approaches
 
 ### Selected: rubric-first GitHub Actions with MCI/MCS
 
-Terraform manages cloud infrastructure, Kustomize manages Kubernetes resources, and GitHub Actions performs validation and future push-based deployment. MCI/MCS matches the assessment language directly. This approach has the smallest operational surface that still demonstrates infrastructure, delivery, security, high availability, observability, and recovery.
+Terraform manages cloud infrastructure, Kustomize manages Kubernetes resources, and small Bash/Make entrypoints plus GitHub Actions perform standard validation and future push-based deployment. MCI/MCS matches the assessment language directly. This approach has the smallest operational surface that still demonstrates infrastructure, delivery, security, high availability, observability, and recovery.
 
 ### Not selected: multi-cluster Gateway API as the initial implementation
 
@@ -214,18 +216,18 @@ Two identity systems remain deliberately separate:
 - GitHub OIDC to Google Cloud external WIF authenticates CI jobs.
 - GKE Workload Identity authenticates Kubernetes ServiceAccounts to Google APIs.
 
-The WIF provider condition binds trust to immutable GitHub repository and owner IDs and to the expected protected GitHub Environment subjects. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster. Immediately after cluster creation, the workflow uses each IAM-aware DNS endpoint once with an ephemeral kubeconfig to install the narrowly resource-named Connect Gateway impersonation policy; all subsequent workload delivery and verification uses Connect Gateway. This avoids a circular dependency in which the gateway would be required to install its own initial authorization.
+The WIF provider condition binds trust to immutable GitHub repository and owner IDs and the exact `repo:<OWNER/REPO>:ref:refs/heads/main` subject. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster. Immediately after cluster creation, the workflow uses each IAM-aware DNS endpoint once with an ephemeral kubeconfig to install the narrowly resource-named Connect Gateway impersonation policy; all subsequent workload delivery and verification uses Connect Gateway. This avoids a circular dependency in which the gateway would be required to install its own initial authorization.
 
-Using one pipeline identity is an intentional assessment simplification. It reduces OIDC, IAM, Terraform, GitHub-variable, and troubleshooting overhead, but its union of plan, infrastructure mutation, workload deployment, verification, and teardown permissions creates a larger blast radius than a production separation-of-duties model. The compensating controls are short-lived OIDC credentials, immutable repository-ID trust, no OIDC permission in pull-request validation, manual protected environments, `main`-only deployment, full-SHA Action pinning, and auditable workflows. The identity ADR will recommend separate read-only planner, infrastructure deployer, namespace workload deployer, and tightly controlled teardown or break-glass identities for production.
+Using one pipeline identity is an intentional assessment simplification. It reduces OIDC, IAM, Terraform, GitHub-variable, and troubleshooting overhead, but its union of plan, infrastructure mutation, workload deployment, verification, and teardown permissions creates a larger blast radius than a production separation-of-duties model. The compensating controls are short-lived OIDC credentials, immutable repository-ID trust, no OIDC permission in pull-request validation, `main`-only manual deployment, full-SHA Action pinning, concurrency controls, and auditable workflows. The identity ADR will recommend protected GitHub Environments plus separate read-only planner, infrastructure deployer, namespace workload deployer, and tightly controlled teardown or break-glass identities for production.
 
-No service-account JSON key, static kubeconfig, secret value, or Terraform plan file is stored in GitHub. Secret containers and IAM are managed by Terraform; secret versions are created directly in Secret Manager by a protected workflow or authorized operator so values do not enter Terraform state. Grafana uses `roles/monitoring.viewer`, dataset-scoped BigQuery read access, and project-level BigQuery job execution through Workload Identity.
+No service-account JSON key, static kubeconfig, secret value, or Terraform plan file is stored in GitHub. Secret containers and IAM are managed by Terraform; secret versions are created directly in Secret Manager by a guarded manual workflow or authorized operator so values do not enter Terraform state. Grafana uses `roles/monitoring.viewer`, dataset-scoped BigQuery read access, and project-level BigQuery job execution through Workload Identity.
 
 Digest pinning guarantees immutable selection but does not prove publisher identity or vulnerability status. The baseline therefore combines:
 
 - A reviewed Docker Hub repository allowlist.
 - Digest-only manifests.
 - Registry resolution checks.
-- Vulnerability scanning with explicit severity policy and documented exceptions.
+- Vulnerability scanning with Trivy and documented exceptions for accepted findings.
 - Full-SHA pinning for third-party GitHub Actions.
 - Dependency update automation that opens reviewed changes rather than silently moving versions.
 
@@ -261,7 +263,7 @@ The assessment overview dashboard includes at least these four panels:
 
 Dashboard variables cover cluster, region, namespace, and application. The committed dashboard JSON files are assessment-ready exports. A live screenshot is not fabricated; the evidence runbook explains how to capture one after deployment.
 
-A dedicated `observability/grafana` Kubernetes ServiceAccount impersonates a narrowly scoped Google service account through GKE Workload Identity. The service account receives `roles/monitoring.viewer`, dataset-scoped `roles/bigquery.dataViewer`, project-scoped `roles/bigquery.jobUser`, and the minimum project-read permission required by the data-source plugins. Both data sources use Google metadata-server (`gce`) authentication. Post-deployment tests prove BigQuery and Monitoring queries work and assert that no service-account key file is mounted.
+A dedicated `observability/grafana` Kubernetes ServiceAccount impersonates a narrowly scoped Google service account through GKE Workload Identity. The service account receives `roles/monitoring.viewer`, dataset-scoped `roles/bigquery.dataViewer`, project-scoped `roles/bigquery.jobUser`, and the minimum project-read permission required by the data-source plugins. Both data sources use Google metadata-server (`gce`) authentication. Post-deployment verification proves BigQuery and Monitoring queries work and confirms that no service-account key file is mounted.
 
 Cloud Trace, Profiler, and application-internal metrics are documented as instrumentation boundaries. The APIs may be enabled, but the repository will not claim useful application traces or profiles from images that do not emit them.
 
@@ -271,52 +273,46 @@ Cloud Trace, Profiler, and application-internal metrics are documented as instru
 
 `.github/workflows/validate.yml` runs for pull requests and pushes to `main` with `contents: read` and no OIDC permission. It performs:
 
-- Terraform formatting, `init -backend=false`, validation, linting, security scanning, and mock-provider tests.
-- Kustomize rendering for every overlay.
-- Kubernetes schema and policy validation.
-- Verification that the two applications render at three minimum replicas and that HPAs cannot scale below three.
-- Docker Hub allowlist, digest syntax, digest resolution, and image vulnerability checks.
-- Validation of all three Grafana dashboard JSON files, expected-dashboard assertions, and the four required overview panels.
-- BigQuery SQL linting.
-- Shell, YAML, Markdown, and documentation-link checks.
-- Kind smoke testing of account-independent workload bases, including the controlled readiness-probe drill.
-- Publication of rendered manifests, image inventory, tool versions, and non-secret reports.
+- Terraform formatting, `init -backend=false`, validation, a small set of native mock-provider tests, TFLint, and Trivy configuration scanning.
+- Kustomize rendering for every overlay followed by Kubeconform schema validation and a few direct `yq` assertions for the three-replica/HPA/PDB contract.
+- Docker Hub digest resolution and Trivy image scanning.
+- `jq` validation of the three Grafana dashboard exports and the four required overview panels.
+- ShellCheck and actionlint; BigQuery validates the sample SQL with authenticated dry runs during post-deployment verification.
 
-This workflow is not described as a Terraform plan because it cannot query live GCP APIs or state without an account.
+These are standard quality checks, not additional assessment features or an internally developed validation product. This workflow is not described as a Terraform plan because it cannot query live GCP APIs or state without an account.
 
 ### One-time bootstrap
 
-A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. In the normal path, the same command uses an authenticated GitHub CLI session to configure the generated WIF provider, single `assessment-deployer` service-account identifier, and Environment names as GitHub repository settings. If the GitHub CLI is unavailable, it prints exact follow-up commands containing only non-secret values.
+A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. It outputs the non-secret GitHub repository variables for the generated WIF provider and single `assessment-deployer` service account. The operator can set them with the documented GitHub CLI commands or repository UI; no protected Environment is required by the baseline.
 
 The bootstrap is the only unavoidable initial trust step. Routine workflows use OIDC and do not require stored cloud secrets.
 
-### Protected deployment
+### Manual deployment
 
 `.github/workflows/deploy.yml` is `workflow_dispatch` only and rejects refs other than `main`.
 
-- The plan job uses the `production-plan` environment and impersonates `assessment-deployer`.
-- The apply job uses the separately protected `production` environment and impersonates the same `assessment-deployer` identity.
-- The workflow contract restricts the plan job to read-only Terraform commands, while the design records that IAM cannot enforce that command-level distinction when both jobs share one account.
+- Plan and apply jobs impersonate the same `assessment-deployer` identity through OIDC.
+- Each Terraform stack job displays a redacted structural plan summary and then applies the same job-local saved plan; IAM cannot enforce command-level separation when both operations share one account.
 - GitHub concurrency prevents overlapping production applies; GCS state locking remains authoritative.
-- The workflow regenerates and compares the reviewed plan representation before applying a fresh local plan.
+- The workflow applies the job-local saved plan produced by its immediately preceding plan command.
 - Saved Terraform plans are not uploaded because they can contain sensitive values.
 - Workloads are deployed through Connect Gateway.
 - The workflow waits for rollouts, verifies three ready replicas per application per cluster, checks MCI backend health, tests both routes, validates HTTPS when enabled, checks BigQuery ingestion, and validates Grafana provisioning.
 - Non-secret evidence and precise commands for retrieving protected data are published at the end.
 
-### Protected teardown
+### Manual teardown
 
-`.github/workflows/teardown.yml` requires an independent protected environment, the exact project ID, and typed confirmation. It removes MCI and workload resources first, waits for managed load-balancer cleanup, and then destroys platform and foundation states in reverse order. The bootstrap state bucket and trust configuration remain until an administrator deliberately performs final decommissioning.
+`.github/workflows/teardown.yml` requires the exact project ID and typed confirmation. It removes MCI and workload resources first, waits for managed load-balancer cleanup, and then destroys platform and foundation states in reverse order. The bootstrap state bucket and trust configuration remain until an administrator deliberately performs final decommissioning. A protected Environment with required reviewers is the documented production recommendation.
 
 ## 12. Failure Handling and Recovery
 
 - Readiness and load-balancer health checks remove an unhealthy pod or region from service.
 - The three-replica baseline, HPA, disruption budget, and topology spread protect rolling maintenance and pod failure scenarios.
 - Loss of the MCI configuration cluster does not interrupt an already programmed load balancer, but reconciliation pauses; the runbook distinguishes data-plane availability from control-plane management.
-- Certificate activation is a named pipeline gate rather than an assumed immediate event.
-- Docker Hub resolution and scan failures stop validation before deployment. A future Artifact Registry mirror is the mitigation for registry availability and rate limits.
+- Certificate activation uses a bounded workflow wait rather than being assumed immediate.
+- Docker Hub resolution and Trivy scan failures stop validation before deployment. A future Artifact Registry mirror is the mitigation for registry availability and rate limits.
 - Deployment stops on failed rollout or smoke tests and does not continue to later verification stages.
-- Normal application rollback redeploys a reviewed last-known-good Git commit and immutable digests through the protected workflow.
+- Normal application rollback redeploys a reviewed last-known-good Git commit and immutable digests through the manual deployment workflow.
 - `kubectl rollout undo` is an emergency action followed immediately by a Git reconciliation change.
 - Terraform resources are corrected forward. GCS object versioning is state-disaster recovery, not a routine rollback mechanism.
 - Teardown ordering prevents orphaned MCI load balancers and network endpoint groups.
@@ -325,14 +321,13 @@ The bootstrap is the only unavoidable initial trust step. Routine workflows use 
 
 ### Account-free evidence
 
-- Terraform format, validation, tests, and scan reports.
-- Rendered Kubernetes manifests and policy-test results.
-- Assertions proving three replicas and HPA minimum three for both applications in both overlays.
+- Terraform format, validation, native test, lint, and scan output.
+- Rendered Kubernetes manifests and Kubeconform results.
+- Direct `yq` assertions proving three replicas and HPA minimum three for both applications in both overlays.
 - Resolved image inventory and scan results.
-- Validated Grafana dashboard exports and panel inventories.
-- Linted BigQuery queries.
-- Documentation and link checks.
-- A controlled readiness-probe troubleshooting drill that runs in GitHub Actions with Kind and can also run locally when Docker is available.
+- `jq`-validated Grafana dashboard exports and panel inventories.
+- BigQuery SQL files ready for authenticated dry-run validation after OIDC is configured.
+- Shell, YAML, and workflow lint output.
 
 ### Post-deployment evidence
 
@@ -359,7 +354,7 @@ The repository includes a reproducible controlled exercise that introduces an in
 4. The root cause: health-check path mismatch.
 5. The manifest correction.
 6. Verification that all three replicas become Ready and the service answers.
-7. Cleanup and prevention through manifest tests.
+7. Cleanup and prevention through explicit readiness probes plus Kubeconform and rendered-manifest review.
 
 It is labeled as a controlled troubleshooting drill. After a real GCP deployment, the same structure records any actual MCI, certificate, IAM, or observability issue without rewriting history.
 
@@ -381,7 +376,7 @@ The final repository documentation includes:
 - Evidence checklist with commands and honest status labels.
 - An interview guide containing an architecture walkthrough, decision rationale, trade-offs, likely questions, and production evolution.
 
-Documentation links and selected machine-readable examples are tested in CI so drift becomes a build failure.
+Documentation is reviewed alongside the implementation, while the machine-readable Terraform, YAML, workflow, SQL, and dashboard artifacts are checked by their standard validators.
 
 ## 16. Cost and Free-Tier Position
 
@@ -394,7 +389,7 @@ Cost controls include:
 - Partition-bounded dashboard queries.
 - Small Autopilot-compatible resource requests.
 - No service mesh, stateful database, or duplicate Grafana deployment.
-- A protected teardown workflow and residual-resource check.
+- A guarded teardown workflow and residual-resource check.
 - Optional features, including Backup for GKE and enforced Binary Authorization, disabled until intentionally selected.
 
 ## 17. Future Migration to Multi-cluster Gateway
@@ -415,14 +410,14 @@ This is documented but not implemented in the baseline so the assessment remains
 | Assessment expectation | Designed artifact | Pre-deployment status |
 |---|---|---|
 | Working cluster and accessible endpoint | Terraform, MCI/MCS, Kustomize, deploy and smoke-test workflow | Deployment evidence pending |
-| Two GKE clusters | Two regional Autopilot cluster resources and Fleet memberships | Account-free validation available |
-| Two applications in both clusters | Two external images, two overlays, three replicas each | Render and policy validation available |
-| Scalable multi-pod workloads | Deployments, HPA 3-10, PDB, topology spread | Manifest assertions available |
+| Two GKE clusters | Two regional Autopilot cluster resources and Fleet memberships | Terraform validation and native tests available |
+| Two applications in both clusters | Two external images, two overlays, three replicas each | Kustomize/Kubeconform validation available |
+| Scalable multi-pod workloads | Deployments, HPA 3-10, PDB, topology spread | Rendered-manifest assertions available |
 | Global traffic and failover | Static IP, MCI, two explicit MCS backends, health checks | Deployment evidence pending |
-| Grafana dashboards | Provisioned Grafana and three committed dashboard JSON exports | Export validation available |
-| Four required overview panels | BigQuery error rate; Monitoring restarts, latency, CPU/memory | Query/dashboard validation available; live data pending |
-| BigQuery log analysis | Partitioned sink design, schema guide, executable SQL for application, node, control-plane, and load-balancer logs | SQL linting available; live schema pending |
-| Troubleshooting scenario | Controlled readiness failure drill and post-deploy incident template | Kind-based GitHub Actions execution and local runbook |
+| Grafana dashboards | Provisioned Grafana and three committed dashboard JSON exports | JSON validation available |
+| Four required overview panels | BigQuery error rate; Monitoring restarts, latency, CPU/memory | `jq`/SQL validation available; live data pending |
+| BigQuery log analysis | Partitioned sink design, schema guide, executable SQL for application, node, control-plane, and load-balancer logs | SQL templates committed; authenticated dry-run and live schema pending |
+| Troubleshooting scenario | Controlled readiness failure drill and post-deploy incident template | Deployment runbook; live evidence pending |
 | Reproducible Terraform | Bootstrap, foundation, and platform roots | Format, validation, scan, and mock tests available |
 | Architecture and setup documentation | Diagrams, setup guides, ADRs, runbooks, interview guide | Repository deliverables |
 | Security controls | Private clusters, WIF, Secret Manager, Cloud Armor, image policy | Static validation available; live IAM tests pending |
@@ -462,8 +457,8 @@ Implementation must preserve the following non-negotiable properties:
 - The repository contains working Grafana provisioning, three dashboard exports, and the four required panels on the assessment overview.
 - OIDC/WIF replaces stored Google Cloud keys after a single documented bootstrap.
 - Exactly one GitHub-federated `assessment-deployer` service account handles plan, apply, workload delivery, verification, and teardown; the documented production recommendation splits these duties.
-- A future operator can deploy, verify, collect evidence, roll back, and tear down through documented commands and protected workflows.
+- A future operator can deploy, verify, collect evidence, roll back, and tear down through documented commands and manual workflows.
 - Evidence is never fabricated; live-only outcomes are explicitly marked until observed.
 - Every material trade-off is recorded with consequences and primary references.
 - The minimum-three replica rule applies to the two assessed web applications in both clusters; Grafana is a recoverable platform tool and is not counted as an assessed application replica set.
-- Before the repository is called deploy-ready, it commits concrete image and Action digests, Terraform/tool/Grafana/plugin versions, probe ports and paths, resource requests and limits, HPA CPU target, and vulnerability-policy thresholds; validation asserts each value.
+- Before the repository is called deploy-ready, it commits concrete image and Action digests, Terraform/tool/Grafana/plugin versions, probe ports and paths, resource requests and limits, HPA CPU target, and vulnerability thresholds; standard validators cover the resulting Terraform, manifests, workflows, dashboards, and SQL.

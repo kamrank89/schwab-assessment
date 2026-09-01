@@ -1,0 +1,20 @@
+apiVersion: networking.gke.io/v1
+kind: MultiClusterService
+metadata:
+  annotations:
+    cloud.google.com/backend-config: '{"ports": {"8080":"app-b-backend"}}'
+  name: app-b-mcs
+  namespace: assessment
+spec:
+  clusters:
+    - link: us-central1/gke-assessment-us-central1
+    - link: us-east1/gke-assessment-us-east1
+  template:
+    spec:
+      ports:
+        - name: http
+          port: 8080
+          protocol: TCP
+          targetPort: http
+      selector:
+        app.kubernetes.io/name: app-b

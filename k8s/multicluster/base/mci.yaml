@@ -1,0 +1,24 @@
+apiVersion: networking.gke.io/v1
+kind: MultiClusterIngress
+metadata:
+  annotations:
+    networking.gke.io/static-ip: GLOBAL_IP_ADDRESS
+  name: assessment-ingress
+  namespace: assessment
+spec:
+  template:
+    spec:
+      backend:
+        serviceName: app-a-mcs
+        servicePort: 8080
+      rules:
+        - http:
+            paths:
+              - backend:
+                  serviceName: app-a-mcs
+                  servicePort: 8080
+                path: /app-a
+              - backend:
+                  serviceName: app-b-mcs
+                  servicePort: 8080
+                path: /app-b

@@ -102,7 +102,7 @@
           "location": "US",
           "project": "${GCP_PROJECT_ID}",
           "rawQuery": true,
-          "rawSql": "SELECT\n  TIMESTAMP_TRUNC(timestamp, MINUTE) AS time,\n  100 * SAFE_DIVIDE(\n    COUNTIF(httpRequest.status BETWEEN 500 AND 599),\n    COUNT(*)\n  ) AS error_rate_percent\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND REGEXP_CONTAINS(COALESCE(resource.labels.backend_service_name, ''), r'$application')\nGROUP BY time\nORDER BY time",
+          "rawSql": "SELECT\n  TIMESTAMP_TRUNC(timestamp, MINUTE) AS time,\n  100 * SAFE_DIVIDE(\n    COUNTIF(httpRequest.status BETWEEN 500 AND 599),\n    COUNT(*)\n  ) AS error_rate_percent\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND REGEXP_CONTAINS(COALESCE(resource.labels.backend_service_name, ''), $application)\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],

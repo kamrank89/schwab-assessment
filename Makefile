@@ -8,10 +8,14 @@ tools:
 	./scripts/install-tools.sh
 
 tool-versions:
-	@for tool in terraform kubectl kustomize kubeconform jq shellcheck actionlint crane; do \
-	  command -v $$tool >/dev/null; \
-	  $$tool version 2>/dev/null || $$tool --version; \
-	done
+	terraform version
+	kubectl version --client=true --output=yaml | awk '/^[[:space:]]*gitVersion:/ { print $$2; found = 1; exit } END { exit !found }'
+	kustomize version
+	kubeconform -v
+	jq --version
+	shellcheck --version
+	actionlint -version
+	crane version
 
 bootstrap:
 	./scripts/bootstrap.sh --project-id "$(PROJECT_ID)" --state-bucket "$(STATE_BUCKET)" \

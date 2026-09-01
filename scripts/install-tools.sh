@@ -60,15 +60,27 @@ print_version() {
   local tool="$1"
 
   case "$tool" in
+    terraform)
+      "$bin_dir/$tool" version
+      ;;
     kubectl)
       "$bin_dir/$tool" version --client=true --output=yaml | \
         awk '/^[[:space:]]*gitVersion:/ { print $2; found = 1; exit } END { exit !found }'
       ;;
+    kustomize)
+      "$bin_dir/$tool" version
+      ;;
     kubeconform)
       "$bin_dir/$tool" -v
       ;;
-    *)
-      "$bin_dir/$tool" version 2>/dev/null || "$bin_dir/$tool" --version
+    jq | shellcheck)
+      "$bin_dir/$tool" --version
+      ;;
+    actionlint)
+      "$bin_dir/$tool" -version
+      ;;
+    crane)
+      "$bin_dir/$tool" version
       ;;
   esac
 }

@@ -1,1 +1,8 @@
 .worktrees/
+.tools/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+terraform.tfvars
+terraform.tfvars.json

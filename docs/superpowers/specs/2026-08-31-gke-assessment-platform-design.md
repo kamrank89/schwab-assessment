@@ -1,7 +1,7 @@
 # GKE Assessment Platform Design
 
 - **Date:** 2026-08-31
-- **Status:** Approved in conversation; awaiting review of this written specification
+- **Status:** Approved for implementation
 - **Deployment status:** Design and implementation artifacts only; no cloud resources will be created during repository development
 
 ## 1. Purpose
@@ -146,7 +146,7 @@ Terraform uses separate root modules and state boundaries so bootstrap credentia
 - Enables Private Google Access and one Cloud Router/NAT pair per region, including NAT logging.
 - Reserves the global IP and optionally manages Cloud DNS records and certificates.
 - Creates Cloud Armor, Secret Manager containers, the BigQuery dataset, and the Logging sink.
-- Creates IAM bindings from supplied principal sets for Dev, Ops, SRE, and the combined CI pipeline responsibility.
+- Creates IAM bindings from supplied principal sets for Dev, Ops, and SRE, plus narrow App A and Grafana runtime identities. Bootstrap remains the sole owner of the combined CI pipeline permissions so routine teardown cannot delete its own caller or create cross-state IAM drift.
 
 ### `platform`
 
@@ -156,7 +156,7 @@ Terraform uses separate root modules and state boundaries so bootstrap credentia
 - Configures cluster-level Workload Identity, logging, monitoring, the Secret Manager managed add-on, and required platform IAM.
 - Exposes outputs needed by the deployment workflow without storing kubeconfig credentials.
 
-Kubernetes objects remain outside Terraform. Kustomize owns Deployments, Services, RBAC, `MultiClusterService`, `MultiClusterIngress`, `BackendConfig`, `FrontendConfig`, and their cluster-specific overlays. Terraform owns only the GKE/Fleet APIs and managed MCI feature configuration. This keeps cloud-resource state independent of workload rollout, avoids a Kubernetes provider dependency during cluster creation, and permits application rollback without manipulating Terraform state.
+Kubernetes objects remain outside Terraform. Kustomize owns Deployments, Services, RBAC, `MultiClusterService`, `MultiClusterIngress`, `BackendConfig`, `FrontendConfig`, and their cluster-specific overlays. Terraform owns the GKE/Fleet APIs and managed MCI feature configuration as well as the global IP, SSL policy, and optional Compute Google-managed certificate referenced by MCI. MCI does not support declarative Kubernetes `ManagedCertificate` creation. This keeps cloud-resource state independent of workload rollout, avoids a Kubernetes provider dependency during cluster creation, and permits application rollback without manipulating Terraform state.
 
 ## 7. Networking and Traffic
 
@@ -170,10 +170,11 @@ Kubernetes objects remain outside Terraform. Kustomize owns Deployments, Service
 - A preallocated global static IPv4 address exists before MCI configuration.
 - Cloud Armor attaches to MCI backends with baseline WAF and rate-limiting rules. High false-positive-risk managed rules start in preview and have a documented promotion procedure.
 
-HTTPS is intentionally a two-stage operation:
+HTTPS is intentionally staged:
 
 1. Deploy and verify HTTP at the reserved IP.
-2. Point an owned domain to the IP, provision or attach the managed certificate, wait for `ACTIVE`, and then enable HTTPS redirect and the minimum TLS policy.
+2. Point an owned domain to the IP and attach the Terraform-created Google-managed certificate to MCI without redirect.
+3. Wait for the attached certificate to become `ACTIVE`, prove direct HTTPS, and only then enable HTTPS redirect and the minimum TLS policy through `FrontendConfig`.
 
 This ordering avoids a certificate deadlock and still provides an immediately verifiable endpoint when a domain is not yet available.
 
@@ -213,7 +214,7 @@ Two identity systems remain deliberately separate:
 - GitHub OIDC to Google Cloud external WIF authenticates CI jobs.
 - GKE Workload Identity authenticates Kubernetes ServiceAccounts to Google APIs.
 
-The WIF provider condition binds trust to immutable GitHub repository and owner IDs and to the expected protected GitHub Environment subjects. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster.
+The WIF provider condition binds trust to immutable GitHub repository and owner IDs and to the expected protected GitHub Environment subjects. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster. Immediately after cluster creation, the workflow uses each IAM-aware DNS endpoint once with an ephemeral kubeconfig to install the narrowly resource-named Connect Gateway impersonation policy; all subsequent workload delivery and verification uses Connect Gateway. This avoids a circular dependency in which the gateway would be required to install its own initial authorization.
 
 Using one pipeline identity is an intentional assessment simplification. It reduces OIDC, IAM, Terraform, GitHub-variable, and troubleshooting overhead, but its union of plan, infrastructure mutation, workload deployment, verification, and teardown permissions creates a larger blast radius than a production separation-of-duties model. The compensating controls are short-lived OIDC credentials, immutable repository-ID trust, no OIDC permission in pull-request validation, manual protected environments, `main`-only deployment, full-SHA Action pinning, and auditable workflows. The identity ADR will recommend separate read-only planner, infrastructure deployer, namespace workload deployer, and tightly controlled teardown or break-glass identities for production.
 
@@ -285,7 +286,7 @@ This workflow is not described as a Terraform plan because it cannot query live 
 
 ### One-time bootstrap
 
-A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. In the normal path, the same command uses an authenticated GitHub CLI session to configure the generated WIF provider, single `assessment-deployer` service-account identifier, and Environment names as GitHub repository settings. If the GitHub CLI is unavailable, it prints one exact follow-up command containing only non-secret values.
+A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. In the normal path, the same command uses an authenticated GitHub CLI session to configure the generated WIF provider, single `assessment-deployer` service-account identifier, and Environment names as GitHub repository settings. If the GitHub CLI is unavailable, it prints exact follow-up commands containing only non-secret values.
 
 The bootstrap is the only unavoidable initial trust step. Routine workflows use OIDC and do not require stored cloud secrets.
 

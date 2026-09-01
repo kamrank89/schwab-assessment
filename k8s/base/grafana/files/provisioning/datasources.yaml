@@ -1,0 +1,27 @@
+apiVersion: 1
+
+datasources:
+  - access: proxy
+    editable: false
+    isDefault: true
+    jsonData:
+      authenticationType: gce
+      defaultProject: ${GCP_PROJECT_ID}
+    name: gcp-monitoring
+    type: stackdriver
+    uid: gcp-monitoring
+    version: 1
+  - access: proxy
+    editable: false
+    isDefault: false
+    jsonData:
+      MaxBytesBilled: 1073741824
+      additionalAllowedDatasets: ${GCP_PROJECT_ID}.${BIGQUERY_DATASET}
+      authenticationType: gce
+      defaultProject: ${GCP_PROJECT_ID}
+      processingLocation: US
+      restrictToAccessibleDatasets: true
+    name: gcp-bigquery
+    type: grafana-bigquery-datasource
+    uid: gcp-bigquery
+    version: 1

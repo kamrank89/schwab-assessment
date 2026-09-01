@@ -5,6 +5,7 @@ resources:
   - ../../base/namespace
   - ../../base/app-a
   - ../../base/app-b
+  - ../../base/grafana
 
 patches:
   - path: region-label-patch.yaml

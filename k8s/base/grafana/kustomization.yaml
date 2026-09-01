@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceaccount.yaml
+  - secret-provider-class.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+
+configMapGenerator:
+  - files:
+      - grafana.ini=files/provisioning/grafana.ini
+    name: grafana-config
+    namespace: observability
+  - files:
+      - datasources.yaml=files/provisioning/datasources.yaml
+    name: grafana-datasources
+    namespace: observability
+  - files:
+      - dashboard-providers.yaml=files/provisioning/dashboard-providers.yaml
+    name: grafana-dashboard-providers
+    namespace: observability
+  - files:
+      - assessment-overview.json=files/dashboards/assessment-overview.json
+      - multicluster-operations.json=files/dashboards/multicluster-operations.json
+      - traffic-log-analysis.json=files/dashboards/traffic-log-analysis.json
+    name: grafana-dashboards
+    namespace: observability

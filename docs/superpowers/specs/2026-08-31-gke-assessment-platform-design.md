@@ -26,7 +26,7 @@ The implementation is successful when all account-free checks pass and a future 
 
 1. Supply a billing-enabled GCP project, or the billing and organization inputs needed to create one.
 2. Authenticate once from a trusted workstation or Cloud Shell and run the bootstrap command.
-3. Let bootstrap create the GCS Terraform state backend, GitHub OIDC Workload Identity Federation provider, and narrowly scoped pipeline identities.
+3. Let bootstrap create the GCS Terraform state backend, GitHub OIDC Workload Identity Federation provider, and repository-scoped `assessment-deployer` pipeline identity.
 4. Configure the generated non-secret GitHub repository variables using the supplied automation.
 5. Trigger the protected manual deployment workflow.
 6. Have that workflow plan, provision, deploy, verify, and publish non-secret evidence.
@@ -134,7 +134,7 @@ Terraform uses separate root modules and state boundaries so bootstrap credentia
 
 - Optionally creates the project when organization, folder, and billing inputs are supplied; otherwise it attaches to an existing project.
 - Creates a versioned, uniform-access, public-access-prevented GCS state bucket with `force_destroy = false`.
-- Creates GitHub external Workload Identity Federation, repository-scoped attribute conditions, and separate plan/deploy service accounts.
+- Creates GitHub external Workload Identity Federation, repository-scoped attribute conditions, and one `assessment-deployer` service account used by plan, apply, Kubernetes delivery, verification, and teardown jobs.
 - Produces non-secret outputs used to configure GitHub repository variables.
 - Starts with local state or an approved organization bootstrap backend, then migrates its state into the new GCS backend.
 
@@ -146,7 +146,7 @@ Terraform uses separate root modules and state boundaries so bootstrap credentia
 - Enables Private Google Access and one Cloud Router/NAT pair per region, including NAT logging.
 - Reserves the global IP and optionally manages Cloud DNS records and certificates.
 - Creates Cloud Armor, Secret Manager containers, the BigQuery dataset, and the Logging sink.
-- Creates IAM bindings from supplied principal sets for Dev, Ops, SRE, CI plan, and CI deploy responsibilities.
+- Creates IAM bindings from supplied principal sets for Dev, Ops, SRE, and the combined CI pipeline responsibility.
 
 ### `platform`
 
@@ -213,7 +213,9 @@ Two identity systems remain deliberately separate:
 - GitHub OIDC to Google Cloud external WIF authenticates CI jobs.
 - GKE Workload Identity authenticates Kubernetes ServiceAccounts to Google APIs.
 
-The WIF provider condition binds trust to immutable GitHub repository and owner IDs and to the expected GitHub Environment subject. Plan and deployment jobs impersonate different service accounts. Kubernetes authorization remains separate from Connect Gateway IAM: application deployers receive namespace-scoped RBAC, while MCI objects are administered through a narrowly controlled role on the configuration cluster.
+The WIF provider condition binds trust to immutable GitHub repository and owner IDs and to the expected protected GitHub Environment subjects. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster.
+
+Using one pipeline identity is an intentional assessment simplification. It reduces OIDC, IAM, Terraform, GitHub-variable, and troubleshooting overhead, but its union of plan, infrastructure mutation, workload deployment, verification, and teardown permissions creates a larger blast radius than a production separation-of-duties model. The compensating controls are short-lived OIDC credentials, immutable repository-ID trust, no OIDC permission in pull-request validation, manual protected environments, `main`-only deployment, full-SHA Action pinning, and auditable workflows. The identity ADR will recommend separate read-only planner, infrastructure deployer, namespace workload deployer, and tightly controlled teardown or break-glass identities for production.
 
 No service-account JSON key, static kubeconfig, secret value, or Terraform plan file is stored in GitHub. Secret containers and IAM are managed by Terraform; secret versions are created directly in Secret Manager by a protected workflow or authorized operator so values do not enter Terraform state. Grafana uses `roles/monitoring.viewer`, dataset-scoped BigQuery read access, and project-level BigQuery job execution through Workload Identity.
 
@@ -283,7 +285,7 @@ This workflow is not described as a Terraform plan because it cannot query live 
 
 ### One-time bootstrap
 
-A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. In the normal path, the same command uses an authenticated GitHub CLI session to configure the generated WIF provider, service-account identifiers, and Environment names as GitHub repository settings. If the GitHub CLI is unavailable, it prints one exact follow-up command containing only non-secret values.
+A documented `make bootstrap` entry point runs the bootstrap Terraform root under a human's Application Default Credentials. In the normal path, the same command uses an authenticated GitHub CLI session to configure the generated WIF provider, single `assessment-deployer` service-account identifier, and Environment names as GitHub repository settings. If the GitHub CLI is unavailable, it prints one exact follow-up command containing only non-secret values.
 
 The bootstrap is the only unavoidable initial trust step. Routine workflows use OIDC and do not require stored cloud secrets.
 
@@ -291,8 +293,9 @@ The bootstrap is the only unavoidable initial trust step. Routine workflows use 
 
 `.github/workflows/deploy.yml` is `workflow_dispatch` only and rejects refs other than `main`.
 
-- The plan job uses the `production-plan` environment and a read-oriented identity.
-- The apply job uses the separately protected `production` environment and mutation identity.
+- The plan job uses the `production-plan` environment and impersonates `assessment-deployer`.
+- The apply job uses the separately protected `production` environment and impersonates the same `assessment-deployer` identity.
+- The workflow contract restricts the plan job to read-only Terraform commands, while the design records that IAM cannot enforce that command-level distinction when both jobs share one account.
 - GitHub concurrency prevents overlapping production applies; GCS state locking remains authoritative.
 - The workflow regenerates and compares the reviewed plan representation before applying a fresh local plan.
 - Saved Terraform plans are not uploaded because they can contain sensitive values.
@@ -457,6 +460,7 @@ Implementation must preserve the following non-negotiable properties:
 - Three is the minimum application replica count in each cluster and in every rendered production overlay.
 - The repository contains working Grafana provisioning, three dashboard exports, and the four required panels on the assessment overview.
 - OIDC/WIF replaces stored Google Cloud keys after a single documented bootstrap.
+- Exactly one GitHub-federated `assessment-deployer` service account handles plan, apply, workload delivery, verification, and teardown; the documented production recommendation splits these duties.
 - A future operator can deploy, verify, collect evidence, roll back, and tear down through documented commands and protected workflows.
 - Evidence is never fabricated; live-only outcomes are explicitly marked until observed.
 - Every material trade-off is recorded with consequences and primary references.

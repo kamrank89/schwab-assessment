@@ -6,16 +6,16 @@
 
 **Architecture:** App A and App B share Kustomize bases rendered into two equal-capacity regional overlays. MCI/MCS renders only in the us-central1 Fleet configuration cluster through HTTP, TLS-attachment, and HTTPS-redirect stages. Grafana is a single recoverable us-central1 workload; dashboard JSON and SQL are repository artifacts until a future authenticated workflow verifies live integrations.
 
-**Tech Stack:** Kustomize 5.8.1, kubectl/Kubernetes 1.35.8, Kubeconform 0.7.0, yq, jq, GKE MCI/MCS CRDs, Docker Hub digest references, Trivy, Grafana 12.2.5 with BigQuery datasource plugin 3.4.0, BigQuery Standard SQL.
+**Tech Stack:** Kustomize 5.8.1, Kubeconform 0.7.0, jq, GKE MCI/MCS CRDs, Docker Hub digest references, Grafana 12.2.5 with BigQuery datasource plugin 3.4.0, BigQuery Standard SQL.
 
 **Spec:** docs/superpowers/specs/2026-08-31-gke-assessment-platform-design.md
 
 ## Global Constraints
 
-- Do not deploy, apply to, or mutate cloud resources. Only local rendering, client-side dry-runs, manifest inspection, and image/config scans run during implementation.
+- Do not deploy, apply to, or mutate cloud resources. Only local rendering, supported-schema validation, and dashboard JSON parsing run during implementation.
 - Do not add application source, Dockerfiles, container builds, Helm charts, Gateway API baseline objects, a service mesh, custom validators, custom validation helpers, or a language runtime.
 - Use Docker Hub App A source docker.io/nginxinc/nginx-unprivileged:1.30.4-alpine3.24 and App B source docker.io/traefik/whoami:v1.12.0. Resolve each to a canonical docker.io/...@sha256:... digest in its Deployment; never use a moving tag in a workload manifest.
-- Use docker.io/grafana/grafana:12.2.5-ubuntu resolved to an immutable digest and plugin grafana-bigquery-datasource@3.4.0. If it has a fixed Critical finding or cannot run that plugin, select and document a compatible fixed patch before committing its digest.
+- Use docker.io/grafana/grafana:12.2.5-ubuntu resolved to an immutable digest and plugin grafana-bigquery-datasource@3.4.0. Select and document a compatible fixed patch only if that image cannot run the pinned plugin.
 - In each production overlay, App A and App B each set replicas: 3, HPA minReplicas: 3, HPA maxReplicas: 10, CPU target 70, PDB minAvailable: 2, Deployment maxUnavailable: 0, and maxSurge: 1.
 - App A runs as UID/GID 101 on port 8080 and serves /healthz. App B runs as UID/GID 65532 with --port=8080 and serves /health. Startup, readiness, liveness, Service, and BackendConfig health checks agree.
 - Both apps are non-root with allowPrivilegeEscalation: false, dropped capabilities, RuntimeDefault seccomp, and read-only root filesystems. App A receives writable /tmp; App B receives no writable application filesystem.
@@ -91,18 +91,16 @@ observability/bigquery/
 - Produces: narrow delivery-access overlays plus labelled App A/App B Deployments, Services, HPAs, PDBs, NetworkPolicies, and an App A SecretProviderClass in namespace assessment.
 - Consumed by: k8s/overlays/us-central1/kustomization.yaml, k8s/overlays/us-east1/kustomization.yaml, k8s/multicluster/base/mcs-app-a.yaml, and k8s/multicluster/base/mcs-app-b.yaml.
 
-- [ ] **Step 1: Resolve and scan App A and App B**
+- [ ] **Step 1: Resolve App A and App B**
 
-Resolve the reviewed Docker Hub tags to manifest-list digests with `crane`, place each exact digest in its Deployment, and record tag-to-digest provenance in `tools/images.env`. Scan the exact digest references and reject unexcepted fixed HIGH or CRITICAL results before accepting an image.
+Resolve the reviewed Docker Hub tags to manifest-list digests with `crane`, place each exact digest in its Deployment, and record tag-to-digest provenance in `tools/images.env`.
 
 ~~~bash
 app_a_digest="$(crane digest docker.io/nginxinc/nginx-unprivileged:1.30.4-alpine3.24)"
 app_b_digest="$(crane digest docker.io/traefik/whoami:v1.12.0)"
-trivy image --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL "docker.io/nginxinc/nginx-unprivileged@${app_a_digest}"
-trivy image --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL "docker.io/traefik/whoami@${app_b_digest}"
 ~~~
 
-After the scans pass, create `tools/images.env` with `APP_A_IMAGE` and `APP_B_IMAGE` set to those exact canonical digest references; Task 4 adds `GRAFANA_IMAGE`. The file contains assignments only, with no shell commands or moving tags. Use the same values verbatim in the Deployments.
+Create `tools/images.env` with `APP_A_IMAGE` and `APP_B_IMAGE` set to those exact canonical digest references; Task 4 adds `GRAFANA_IMAGE`. The file contains assignments only, with no shell commands or moving tags. Use the same values verbatim in the Deployments.
 
 - [ ] **Step 2: Add narrowly scoped delivery access**
 
@@ -120,20 +118,15 @@ App B uses a KSA with automountServiceAccountToken: false, the Traefik digest, r
 
 For both apps create named http ClusterIP Services on 8080, autoscaling/v2 HPAs with minReplicas: 3, maxReplicas: 10, CPU target 70, and PDBs with minAvailable: 2. NetworkPolicies allow TCP 8080 from assessment and GFE proxy/health ranges 130.211.0.0/22 and 35.191.0.0/16; do not add default egress denial.
 
-- [ ] **Step 5: Run standard local checks**
+- [ ] **Step 5: Build and validate delivery-access overlays**
 
 ~~~bash
-kustomize build k8s/base/namespace | kubeconform -strict -summary -kubernetes-version 1.35.8 -
-kustomize build k8s/base/app-a | kubeconform -strict -summary -kubernetes-version 1.35.8 -ignore-missing-schemas -
-kustomize build k8s/base/app-b | kubeconform -strict -summary -kubernetes-version 1.35.8 -ignore-missing-schemas -
-kubectl apply --dry-run=client --validate=false -f k8s/base/namespace/namespaces.yaml
 kustomize build k8s/access/us-central1 | kubeconform -strict -summary -ignore-missing-schemas -
 kustomize build k8s/access/us-east1 | kubeconform -strict -summary -ignore-missing-schemas -
 kustomize build k8s/access/config-us-central1 | kubeconform -strict -summary -ignore-missing-schemas -
-trivy config --exit-code 1 --severity HIGH,CRITICAL k8s/base/app-a k8s/base/app-b k8s/access
 ~~~
 
-Expected: ordinary Kubernetes kinds conform. SecretProviderClass is skipped only because the GKE add-on schema is not installed locally; client dry-run is limited to built-in Namespace manifests.
+Expected: supported schemas conform; GKE-specific kinds are skipped only when their schemas are not locally available.
 
 - [ ] **Step 6: Commit access and application bases**
 
@@ -162,28 +155,16 @@ git commit -m "feat: add hardened application workload bases"
 
 Both overlays include namespace, App A, and App B bases. The central patch sets Deployment and Pod-template label assessment.schwab/region: us-central1 and App A ASSESSMENT_REGION=us-central1; the eastern patch sets equivalent us-east1 values. Neither overlay changes images, replicas, HPAs, PDBs, probes, resources, rollout strategy, or security context.
 
-- [ ] **Step 2: Check the rendered three-replica/HPA baseline**
-
-~~~bash
-kustomize build k8s/overlays/us-central1 | yq eval-all -e '[select(.kind == "Deployment" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.replicas] | length == 2 and all(.[]; . == 3)' -
-kustomize build k8s/overlays/us-east1 | yq eval-all -e '[select(.kind == "Deployment" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.replicas] | length == 2 and all(.[]; . == 3)' -
-kustomize build k8s/overlays/us-central1 | yq eval-all -e '[select(.kind == "HorizontalPodAutoscaler" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minReplicas] | length == 2 and all(.[]; . == 3)' -
-kustomize build k8s/overlays/us-east1 | yq eval-all -e '[select(.kind == "HorizontalPodAutoscaler" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minReplicas] | length == 2 and all(.[]; . == 3)' -
-kustomize build k8s/overlays/us-central1 | yq eval-all -e '[select(.kind == "PodDisruptionBudget" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minAvailable] | length == 2 and all(.[]; . == 2)' -
-kustomize build k8s/overlays/us-east1 | yq eval-all -e '[select(.kind == "PodDisruptionBudget" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minAvailable] | length == 2 and all(.[]; . == 2)' -
-~~~
-
-Expected: each command emits one true only when both App A and App B resources are present and equal three.
-
-- [ ] **Step 3: Render and scan**
+- [ ] **Step 2: Build and validate the regional production overlays**
 
 ~~~bash
 kustomize build k8s/overlays/us-central1 | kubeconform -strict -summary -kubernetes-version 1.35.8 -ignore-missing-schemas -
 kustomize build k8s/overlays/us-east1 | kubeconform -strict -summary -kubernetes-version 1.35.8 -ignore-missing-schemas -
-trivy config --severity HIGH,CRITICAL k8s/overlays/us-central1 k8s/overlays/us-east1
 ~~~
 
-- [ ] **Step 4: Commit regional overlays**
+Expected: both production overlays render, and supported Kubernetes schemas conform.
+
+- [ ] **Step 3: Commit regional overlays**
 
 ~~~bash
 git add k8s/overlays/us-central1 k8s/overlays/us-east1
@@ -233,13 +214,12 @@ Create assessment-ingress as networking.gke.io/v1 MultiClusterIngress in assessm
 
 The TLS overlay adds only TLS_CERTIFICATE_NAME as the pre-shared certificate. The HTTPS overlay builds on TLS, creates networking.gke.io/v1beta1 FrontendConfig assessment-https with SSL policy schwab-assessment-tls and redirectToHttps.enabled: true, and attaches it to MCI. Do not create a ManagedCertificate.
 
-- [ ] **Step 3: Render and scan routing resources**
+- [ ] **Step 3: Build and validate all routing overlays**
 
 ~~~bash
 kustomize build k8s/overlays/config-us-central1/http | kubeconform -strict -summary -ignore-missing-schemas -
 kustomize build k8s/overlays/config-us-central1/tls | kubeconform -strict -summary -ignore-missing-schemas -
 kustomize build k8s/overlays/config-us-central1/https | kubeconform -strict -summary -ignore-missing-schemas -
-trivy config --severity HIGH,CRITICAL k8s/multicluster k8s/overlays/config-us-central1
 ~~~
 
 Expected: generic validation skips GKE CRDs whose schemas are not bundled locally. Review rendered YAML for exact MCI/MCS names, membership links, health paths, annotations, and ordering.
@@ -275,13 +255,12 @@ git commit -m "feat: add staged MCI and MCS routing"
 - Produces: observability/grafana KSA, SecretProviderClass, one ClusterIP Grafana Deployment, datasource provisioning, and exactly three dashboard exports.
 - Consumed by: future authenticated port-forward and evidence steps; Grafana is never an MCI target.
 
-- [ ] **Step 1: Resolve and scan Grafana**
+- [ ] **Step 1: Resolve Grafana**
 
-Resolve and scan the selected Grafana digest before adding it to k8s/base/grafana/deployment.yaml; record it in `tools/images.env` and confirm plugin compatibility.
+Resolve the selected Grafana digest before adding it to k8s/base/grafana/deployment.yaml; record it in `tools/images.env` and confirm plugin compatibility.
 
 ~~~bash
 grafana_digest="$(crane digest docker.io/grafana/grafana:12.2.5-ubuntu)"
-trivy image --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL "docker.io/grafana/grafana@${grafana_digest}"
 ~~~
 
 Add `GRAFANA_IMAGE=docker.io/grafana/grafana@${grafana_digest}` to `tools/images.env` using the actual resolved value and use that same reference verbatim in the Deployment. At this point the inventory has exactly the three required variables and no others.
@@ -294,15 +273,13 @@ Set GF_SECURITY_ADMIN_PASSWORD__FILE=/var/run/secrets/grafana/admin-password, GF
 
 Use configMapGenerator to package Grafana provisioning and dashboard files. Datasources define gcp-monitoring (stackdriver) and gcp-bigquery (grafana-bigquery-datasource) with metadata-server gce authentication, GCP_PROJECT_ID, location US, MaxBytesBilled: 1073741824, and restrictToAccessibleDatasets: true. Do not include a private key or credential file.
 
-- [ ] **Step 3: Create and shape-check dashboards**
+- [ ] **Step 3: Create dashboards and parse their JSON**
 
 Create exactly three JSON exports. assessment-overview.json has exactly four root panels named Application error rate, Pod restarts, Request latency p50/p95/p99, and CPU and memory utilization, plus cluster, region, namespace, and application variables. Its BigQuery target uses SAFE_DIVIDE, 5xx counts, and $__timeFilter(timestamp); Monitoring targets use restart count, backend-latency percentiles 50/95/99, CPU, and memory. The supporting exports cover multi-cluster operations and traffic/log analysis; every BigQuery target includes $__timeFilter(timestamp).
 
 ~~~bash
 kustomize build k8s/overlays/us-central1 | kubeconform -strict -summary -kubernetes-version 1.35.8 -ignore-missing-schemas -
-trivy config --severity HIGH,CRITICAL k8s/base/grafana
-test "$(find k8s/base/grafana/files/dashboards -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = 3
-jq -e '([.panels[] | select(.type != "row")] | length) == 4 and ([.templating.list[].name] | sort | contains(["application", "cluster", "namespace", "region"]))' k8s/base/grafana/files/dashboards/assessment-overview.json
+find k8s/base/grafana/files/dashboards -maxdepth 1 -type f -name '*.json' -print0 | xargs -0 -n1 jq empty
 ~~~
 
 - [ ] **Step 4: Commit Grafana provisioning and exports**
@@ -364,6 +341,6 @@ git commit -m "feat: add bounded BigQuery log queries"
 
 ## Account-Free Validation Boundary
 
-Credential-free validation runs only Kustomize, Kubeconform, yq, jq, and Trivy commands listed above. Do not add language runtimes, bespoke policy files, Kind tests, custom validation scripts, or custom helper code.
+Credential-free validation runs only Kustomize rendering for every access, regional, and configuration overlay; Kubeconform validation of supported schemas; and `jq empty` for each dashboard JSON file. Do not add language runtimes, bespoke policy files, Kind tests, custom validation scripts, or custom helper code. After the image inventory exists, `make security-scan` may be run as an optional advisory command; it is not an implementation gate.
 
-These checks establish manifest renderability, ordinary Kubernetes schema conformance, explicit three-replica/HPA-minimum shape, scan output, and Grafana export shape. They cannot establish GKE scheduling, HPA behavior, Secret Manager CSI access, Workload Identity authorization, MCI reconciliation, backend health, Cloud Armor attachment, regional failover, certificate activation, log ingestion/table names, Grafana plugin installation, datasource authentication, query validity against live schema, rendered data, or screenshots. Those remain deployment-evidence-pending until the future protected workflow records them.
+These checks establish manifest renderability, ordinary Kubernetes schema conformance, and dashboard JSON syntax. The exact replica/HPA/PDB, routing, and dashboard-panel requirements remain manifest and documentation requirements reviewed with the rendered YAML and exports. The checks cannot establish GKE scheduling, HPA behavior, Secret Manager CSI access, Workload Identity authorization, MCI reconciliation, backend health, Cloud Armor attachment, regional failover, certificate activation, log ingestion/table names, Grafana plugin installation, datasource authentication, query validity against live schema, rendered data, or screenshots. Those remain deployment-evidence-pending until the future protected workflow records them.

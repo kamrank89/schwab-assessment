@@ -61,7 +61,7 @@ An owned DNS domain is optional for the first HTTP verification. It is required 
 - Claims that Cloud Trace or Cloud Profiler contain useful data when the third-party applications are not instrumented.
 - A highly available Grafana database. Grafana is configuration-as-code and recoverable; the assessed applications, rather than the dashboard UI, are the multi-region workloads.
 - Stateful application services such as Cloud SQL, Memorystore, or Pub/Sub. The assessment presents these as application-B options, not mandatory dependencies.
-- Python, pytest, Python-backed lint tooling, custom validation frameworks, and custom policy engines. Standard Terraform, Kubernetes, shell, JSON/YAML query, workflow, and GCP-native validators are sufficient for this assessment.
+- Python, pytest, Python-backed lint tooling, custom validation frameworks, and custom policy engines. A small set of standard Terraform, Kubernetes, shell, JSON, and workflow checks is sufficient for this assessment.
 
 ### Delivery priority
 
@@ -207,7 +207,7 @@ This ordering avoids a certificate deadlock and still provides an immediately ve
 - Resource requests and limits use Autopilot-compatible ratios.
 - Services are `ClusterIP`; internet exposure occurs only through the MCI-managed load balancer.
 
-Final digests are selected during implementation after compatibility and vulnerability checks and then committed to the repository-owned allowlist.
+Final digests are selected during implementation after compatibility and immutable-digest resolution checks and then committed to the repository-owned inventory. An optional advisory security scan is available for reviewers who want the additional signal, but it is not an assessment gate.
 
 ## 9. Identity, Secrets, and Supply Chain
 
@@ -227,9 +227,10 @@ Digest pinning guarantees immutable selection but does not prove publisher ident
 - A reviewed Docker Hub repository allowlist.
 - Digest-only manifests.
 - Registry resolution checks.
-- Vulnerability scanning with Trivy and documented exceptions for accepted findings.
 - Full-SHA pinning for third-party GitHub Actions.
 - Dependency update automation that opens reviewed changes rather than silently moving versions.
+
+`make security-scan` offers an optional, advisory Trivy scan of the Terraform, Kubernetes, and pinned images. It is deliberately excluded from required pull-request and deployment gates because the assessment does not ask for a vulnerability-management program. A production adoption would define ownership, severity thresholds, exception lifetimes, and an approved image-mirroring policy before making scan results blocking.
 
 Binary Authorization is provided as a documented future control. Enforcement begins only after images are mirrored into Artifact Registry, signed or attested under an owned policy, and verified in a non-production mode. Public images will not be misleadingly described as organization-attested.
 
@@ -273,13 +274,12 @@ Cloud Trace, Profiler, and application-internal metrics are documented as instru
 
 `.github/workflows/validate.yml` runs for pull requests and pushes to `main` with `contents: read` and no OIDC permission. It performs:
 
-- Terraform formatting, `init -backend=false`, validation, a small set of native mock-provider tests, TFLint, and Trivy configuration scanning.
-- Kustomize rendering for every overlay followed by Kubeconform schema validation and a few direct `yq` assertions for the three-replica/HPA/PDB contract.
-- Docker Hub digest resolution and Trivy image scanning.
-- `jq` validation of the three Grafana dashboard exports and the four required overview panels.
-- ShellCheck and actionlint; BigQuery validates the sample SQL with authenticated dry runs during post-deployment verification.
+- Terraform formatting, `init -backend=false`, and `terraform validate` for every root.
+- Kustomize rendering for every overlay followed by Kubeconform validation for resources with available schemas.
+- `jq empty` syntax validation for every committed Grafana dashboard export.
+- `bash -n`, ShellCheck, and actionlint; BigQuery validates the sample SQL with authenticated dry runs during post-deployment verification.
 
-These are standard quality checks, not additional assessment features or an internally developed validation product. This workflow is not described as a Terraform plan because it cannot query live GCP APIs or state without an account.
+These lightweight checks catch malformed deliverables without turning validation into a separate project. Assessment-specific facts such as replica counts, HPA bounds, dashboard inventory, and required panels remain explicit, reviewable configuration and are confirmed by the post-deployment workflow. The pull-request workflow is not described as a Terraform plan because it cannot query live GCP APIs or state without an account.
 
 ### One-time bootstrap
 
@@ -310,7 +310,7 @@ The bootstrap is the only unavoidable initial trust step. Routine workflows use 
 - The three-replica baseline, HPA, disruption budget, and topology spread protect rolling maintenance and pod failure scenarios.
 - Loss of the MCI configuration cluster does not interrupt an already programmed load balancer, but reconciliation pauses; the runbook distinguishes data-plane availability from control-plane management.
 - Certificate activation uses a bounded workflow wait rather than being assumed immediate.
-- Docker Hub resolution and Trivy scan failures stop validation before deployment. A future Artifact Registry mirror is the mitigation for registry availability and rate limits.
+- Docker Hub digest-resolution or image-pull failures stop deployment. A future Artifact Registry mirror is the mitigation for registry availability and rate limits.
 - Deployment stops on failed rollout or smoke tests and does not continue to later verification stages.
 - Normal application rollback redeploys a reviewed last-known-good Git commit and immutable digests through the manual deployment workflow.
 - `kubectl rollout undo` is an emergency action followed immediately by a Git reconciliation change.
@@ -321,13 +321,13 @@ The bootstrap is the only unavoidable initial trust step. Routine workflows use 
 
 ### Account-free evidence
 
-- Terraform format, validation, native test, lint, and scan output.
-- Rendered Kubernetes manifests and Kubeconform results.
-- Direct `yq` assertions proving three replicas and HPA minimum three for both applications in both overlays.
-- Resolved image inventory and scan results.
-- `jq`-validated Grafana dashboard exports and panel inventories.
+- Terraform format and validation output.
+- Rendered Kubernetes manifests and Kubeconform results for recognized schemas.
+- Reviewable workload manifests containing the three-replica, HPA, and disruption-budget settings.
+- A resolved immutable image inventory; optional advisory Trivy output may be attached when requested.
+- Syntactically valid Grafana dashboard JSON and reviewable dashboard exports.
 - BigQuery SQL files ready for authenticated dry-run validation after OIDC is configured.
-- Shell, YAML, and workflow lint output.
+- Shell and workflow lint output.
 
 ### Post-deployment evidence
 
@@ -410,17 +410,17 @@ This is documented but not implemented in the baseline so the assessment remains
 | Assessment expectation | Designed artifact | Pre-deployment status |
 |---|---|---|
 | Working cluster and accessible endpoint | Terraform, MCI/MCS, Kustomize, deploy and smoke-test workflow | Deployment evidence pending |
-| Two GKE clusters | Two regional Autopilot cluster resources and Fleet memberships | Terraform validation and native tests available |
+| Two GKE clusters | Two regional Autopilot cluster resources and Fleet memberships | Terraform configuration and validation available |
 | Two applications in both clusters | Two external images, two overlays, three replicas each | Kustomize/Kubeconform validation available |
-| Scalable multi-pod workloads | Deployments, HPA 3-10, PDB, topology spread | Rendered-manifest assertions available |
+| Scalable multi-pod workloads | Deployments, HPA 3-10, PDB, topology spread | Reviewable rendered manifests; live replica evidence pending |
 | Global traffic and failover | Static IP, MCI, two explicit MCS backends, health checks | Deployment evidence pending |
 | Grafana dashboards | Provisioned Grafana and three committed dashboard JSON exports | JSON validation available |
-| Four required overview panels | BigQuery error rate; Monitoring restarts, latency, CPU/memory | `jq`/SQL validation available; live data pending |
+| Four required overview panels | BigQuery error rate; Monitoring restarts, latency, CPU/memory | Committed dashboard export and SQL available; live data pending |
 | BigQuery log analysis | Partitioned sink design, schema guide, executable SQL for application, node, control-plane, and load-balancer logs | SQL templates committed; authenticated dry-run and live schema pending |
 | Troubleshooting scenario | Controlled readiness failure drill and post-deploy incident template | Deployment runbook; live evidence pending |
-| Reproducible Terraform | Bootstrap, foundation, and platform roots | Format, validation, scan, and mock tests available |
+| Reproducible Terraform | Bootstrap, foundation, and platform roots | Format and configuration validation available |
 | Architecture and setup documentation | Diagrams, setup guides, ADRs, runbooks, interview guide | Repository deliverables |
-| Security controls | Private clusters, WIF, Secret Manager, Cloud Armor, image policy | Static validation available; live IAM tests pending |
+| Security controls | Private clusters, WIF, Secret Manager, Cloud Armor, image policy | Reviewable configuration; live IAM tests pending |
 | Cloud Trace and Profiler | APIs and integration boundary documented; third-party apps are not falsely described as instrumented | Explicit baseline limitation and future OpenTelemetry path |
 | Error Reporting | Cloud Logging integration and verification query documented; useful error groups depend on compatible application exceptions | Live behavior pending; limitation traced |
 

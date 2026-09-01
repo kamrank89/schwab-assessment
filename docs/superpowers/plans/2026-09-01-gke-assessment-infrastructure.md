@@ -6,27 +6,26 @@
 
 **Architecture:** bootstrap owns the state backend, GitHub WIF, and one pipeline identity. foundation owns APIs, networking, security, observability, secrets, and runtime identities; platform consumes its outputs to create GKE, Fleet, MCS, and MCI. Kubernetes objects remain Kustomize-owned and outside Terraform.
 
-**Tech Stack:** Terraform 1.15.9, hashicorp/google 7.42.0, native terraform test mock providers, TFLint 0.64.0, Trivy 0.72.0, Google Cloud APIs.
+**Tech Stack:** Terraform 1.15.9, hashicorp/google 7.42.0, Google Cloud APIs.
 
 **Spec:** docs/superpowers/specs/2026-08-31-gke-assessment-platform-design.md
 
 ## Global Constraints
 
-- Do not deploy, run credentialed terraform plan, run terraform apply, import, mutate state, or call GCP APIs during implementation. Native mock tests may use command = plan without credentials.
+- Do not deploy, run terraform plan, run terraform apply, import, mutate state, or call GCP APIs during implementation.
 - Use only hashicorp/google at exact version 7.42.0; do not add a Kubernetes provider or Terraform-managed Kubernetes objects. Set required_version = "~> 1.15.0" and commit lock files for Linux AMD64 and ARM64.
 - Use one hardened state bucket with bootstrap, foundation, and platform prefixes. Preserve versioning, uniform access, public-access prevention, and force_destroy = false.
 - Create exactly one GitHub-federated assessment-deployer service account and no service-account key. WIF binds immutable owner/repository IDs and the exact `refs/heads/main` subject. Protected GitHub Environments are a documented production hardening option, not a baseline trust dependency.
 - Use explicit predefined roles, never Owner or Editor. Keep Grafana and App A runtime identities separate from the deployer.
 - Preserve the approved custom VPC, CIDRs, private/DNS-only control planes, Autopilot, VPC-native networking, GKE Workload Identity, Secret Manager CSI, logging, system metrics, Managed Prometheus, Fleet MCI/MCS, and output interfaces.
 - Outputs contain identifiers and command templates only: never keys, tokens, kubeconfig content, secret values, endpoints, certificates, or saved plans.
-- Account-free checks are only terraform fmt -check, init -backend=false, validate, a few native terraform test invariants, TFLint, and Trivy. Do not add Python, pytest, Rego, custom repository contracts/policy gates, or Python-backed helper installation.
+- Account-free Terraform checks are only terraform fmt -check, init -backend=false, and terraform validate. Do not add Python, pytest, Rego, custom repository contracts/policy gates, or Python-backed helper installation.
 
 ---
 
 ## File Structure
 
 ~~~text
-.tflint.hcl
 infra/
 ├── bootstrap/
 │   ├── backend.tf.example
@@ -40,8 +39,7 @@ infra/
 │   ├── wif.tf
 │   ├── pipeline_iam.tf
 │   ├── outputs.tf
-│   ├── terraform.tfvars.example
-│   └── tests/bootstrap.tftest.hcl
+│   └── terraform.tfvars.example
 ├── foundation/
 │   ├── backend.tf
 │   ├── versions.tf
@@ -61,8 +59,7 @@ infra/
 │   ├── team_iam.tf
 │   ├── outputs.tf
 │   ├── assessment.auto.tfvars
-│   ├── terraform.tfvars.example
-│   └── tests/foundation.tftest.hcl
+│   └── terraform.tfvars.example
 └── platform/
     ├── backend.tf
     ├── versions.tf
@@ -74,8 +71,7 @@ infra/
     ├── fleet.tf
     ├── multicluster_features.tf
     ├── outputs.tf
-    ├── terraform.tfvars.example
-    └── tests/platform.tftest.hcl
+    └── terraform.tfvars.example
 ~~~
 
 infra/bootstrap/backend.tf.example is not loaded during first bootstrap. The documented workflow creates ignored infra/bootstrap/backend.generated.tf after the bucket exists, then runs terraform init -migrate-state. Foundation and platform use partial backend "gcs" {} blocks and receive bucket/prefix through -backend-config.
@@ -83,7 +79,6 @@ infra/bootstrap/backend.tf.example is not loaded during first bootstrap. The doc
 ### Task 1: Establish Terraform root conventions
 
 **Files:**
-- Create: .tflint.hcl
 - Create: infra/bootstrap/{backend.tf.example,versions.tf,providers.tf}
 - Create: infra/foundation/{backend.tf,versions.tf,providers.tf}
 - Create: infra/platform/{backend.tf,versions.tf,providers.tf}
@@ -110,7 +105,7 @@ terraform {
 
 Each providers.tf declares only provider "google"; bootstrap uses local.effective_project_id, foundation/platform use local.project_id.
 
-- [ ] **Step 2: Add backend placeholders and lint configuration**
+- [ ] **Step 2: Add backend placeholders**
 
 foundation/backend.tf and platform/backend.tf contain:
 
@@ -120,7 +115,7 @@ terraform {
 }
 ~~~
 
-Put the same block plus a backend.generated.tf comment in bootstrap/backend.tf.example. Configure .tflint.hcl for Terraform and Google rules only; no custom rules.
+Put the same block plus a backend.generated.tf comment in bootstrap/backend.tf.example.
 
 - [ ] **Step 3: Initialize, lock, format, and commit**
 
@@ -132,7 +127,7 @@ terraform -chdir=infra/bootstrap providers lock -platform=linux_amd64 -platform=
 terraform -chdir=infra/foundation providers lock -platform=linux_amd64 -platform=linux_arm64
 terraform -chdir=infra/platform providers lock -platform=linux_amd64 -platform=linux_arm64
 terraform fmt -check -recursive infra
-git add .tflint.hcl infra/bootstrap infra/foundation infra/platform
+git add infra/bootstrap infra/foundation infra/platform
 git commit -m "build: establish Terraform root conventions"
 ~~~
 
@@ -142,7 +137,6 @@ Expected: Google 7.42.0 and both Linux checksums are recorded per root; formatti
 
 **Files:**
 - Create: infra/bootstrap/{variables.tf,locals.tf,project.tf,services.tf,state_bucket.tf,wif.tf,pipeline_iam.tf,outputs.tf,terraform.tfvars.example}
-- Create: infra/bootstrap/tests/bootstrap.tftest.hcl
 
 **Interfaces:**
 - Consumes: project_id:string, create_project:bool, project_name:string, billing_account:string|null, folder_id:string|null, organization_id:string|null, state_bucket_name:string, state_bucket_location:string, github_repository:string, github_repository_id:string, github_owner_id:string.
@@ -173,17 +167,14 @@ toset([
 ])
 ~~~
 
-- [ ] **Step 3: Add safe outputs, a native invariant, and commit**
+- [ ] **Step 3: Add safe outputs and commit**
 
-Export only the Task 2 interface; examples are valid non-secret values. bootstrap/tests/bootstrap.tftest.hcl uses mock_provider "google", test variables, and an overridden project number. One command = plan run asserts bucket hardening, assessment-deployer, and WIF condition presence of immutable ID claims and the exact main ref.
+Export only the Task 2 interface; examples are valid non-secret values.
 
 ~~~bash
 terraform fmt -check -recursive infra/bootstrap
 terraform -chdir=infra/bootstrap init -backend=false -input=false
 terraform -chdir=infra/bootstrap validate
-terraform -chdir=infra/bootstrap test -test-directory=tests -no-color
-tflint --chdir=infra/bootstrap
-trivy config --exit-code 1 --severity HIGH,CRITICAL infra/bootstrap
 git add infra/bootstrap
 git commit -m "feat: add keyless GitHub bootstrap infrastructure"
 ~~~
@@ -192,15 +183,14 @@ git commit -m "feat: add keyless GitHub bootstrap infrastructure"
 
 **Files:**
 - Create: infra/foundation/{variables.tf,remote_state.tf,locals.tf,apis.tf,network.tf,nat.tf,ingress.tf,dns.tf,armor.tf,logging_bigquery.tf,secrets.tf,workload_iam.tf,team_iam.tf,outputs.tf,assessment.auto.tfvars,terraform.tfvars.example}
-- Create: infra/foundation/tests/foundation.tftest.hcl
 
 **Interfaces:**
-- Consumes: terraform_state_bucket:string and bootstrap remote-state outputs, or typed bootstrap_outputs_override containing effective_project_id, project_number, terraform_state_bucket, and pipeline_service_account_email.
+- Consumes: terraform_state_bucket:string and bootstrap remote-state outputs containing effective_project_id, project_number, terraform_state_bucket, and pipeline_service_account_email.
 - Produces: project_id:string, project_number:string, network_self_link:string, cluster_networks:map(object), global_ipv4_address:string, global_address_name:string, cloud_armor_policy_name:string, ssl_policy_name:string, tls_certificate_name:string|null, bigquery_dataset_id:string, grafana_runtime_gsa_email:string, app_a_runtime_gsa_email:string, gke_node_gsa_email:string, and secret IDs.
 
 - [ ] **Step 1: Consume bootstrap state and implement exact networking**
 
-Read GCS prefix bootstrap only if the typed override is null; tests supply the override and dummy bucket. Use exactly:
+Read GCS prefix bootstrap and require the state bucket as a non-secret input. Use exactly:
 
 ~~~hcl
 {
@@ -231,17 +221,12 @@ team_roles = {
 
 Commit HTTP-first assessment.auto.tfvars: HTTPS/DNS flags false, nullable DNS values, empty team lists.
 
-- [ ] **Step 3: Add one native invariant, verify, and commit**
-
-The mock-provider test uses the bootstrap override and one plan run to assert two network entries/eight distinct CIDRs, Private Google Access and Flow Logs, a unique-writer partitioned sink, and the three approved account IDs.
+- [ ] **Step 3: Verify and commit**
 
 ~~~bash
 terraform fmt -check -recursive infra/foundation
 terraform -chdir=infra/foundation init -backend=false -input=false
 terraform -chdir=infra/foundation validate
-terraform -chdir=infra/foundation test -test-directory=tests -no-color
-tflint --chdir=infra/foundation
-trivy config --exit-code 1 --severity HIGH,CRITICAL infra/foundation
 git add infra/foundation
 git commit -m "feat: add shared GCP foundation"
 ~~~
@@ -250,15 +235,14 @@ git commit -m "feat: add shared GCP foundation"
 
 **Files:**
 - Create: infra/platform/{variables.tf,remote_state.tf,locals.tf,clusters.tf,fleet.tf,multicluster_features.tf,outputs.tf,terraform.tfvars.example}
-- Create: infra/platform/tests/platform.tftest.hcl
 
 **Interfaces:**
-- Consumes: terraform_state_bucket:string and foundation remote-state outputs, or typed foundation_outputs_override containing the Task 3 interface.
+- Consumes: terraform_state_bucket:string and foundation remote-state outputs containing the Task 3 interface.
 - Produces: clusters:map(object({name,location,fleet_membership_name})), mci_config_membership_name:string, workload_identity_pool:string, plus non-secret foundation runtime/edge/logging pass-through outputs; no endpoint, token, certificate, or kubeconfig output.
 
 - [ ] **Step 1: Implement typed state consumption and two clusters**
 
-Read GCS prefix foundation only if override is null. Create exactly gke-assessment-us-central1 and gke-assessment-us-east1: Autopilot, VPC-native, approved VPC/subnet/ranges and control-plane ranges, Regular channel, deletion_protection = false, private nodes, disabled IP endpoints, and external IAM-aware DNS access without tokens/certs via DNS.
+Read GCS prefix foundation using the required non-secret state-bucket input. Create exactly gke-assessment-us-central1 and gke-assessment-us-east1: Autopilot, VPC-native, approved VPC/subnet/ranges and control-plane ranges, Regular channel, deletion_protection = false, private nodes, disabled IP endpoints, and external IAM-aware DNS access without tokens/certs via DNS.
 
 Set the project svc.id.goog workload pool, node GSA, Secret Manager CSI rotation 300s, SYSTEM_COMPONENTS, WORKLOADS, APISERVER, SCHEDULER, and CONTROLLER_MANAGER logging, system/component metrics, Managed Prometheus, maintenance window, and assessment labels.
 
@@ -266,29 +250,26 @@ Set the project svc.id.goog workload pool, node GSA, Secret Manager CSI rotation
 
 Create regular global memberships whose IDs exactly match cluster names. Enable globally located MCS, then globally located MCI. MCI uses the full us-central1 membership ID as its configuration membership and depends on both memberships and MCS. Terraform creates no Kubernetes traffic object; Kustomize owns explicit-membership MCS, MultiClusterService, MultiClusterIngress, BackendConfig, and FrontendConfig.
 
-- [ ] **Step 3: Add safe outputs, a native invariant, and commit**
+- [ ] **Step 3: Add safe outputs and commit**
 
-Export the Task 4 interface and only command templates of the form gcloud container fleet memberships get-credentials <membership-name> --project <project-id>. The mock-provider test uses the foundation override and one plan run asserting exactly two VPC-native Autopilot clusters, private approved master CIDRs/disabled IP endpoints, exact names, global membership/MCS/MCI locations, and us-central1 MCI configuration membership.
+Export the Task 4 interface and only command templates of the form gcloud container fleet memberships get-credentials <membership-name> --project <project-id>.
 
 ~~~bash
 terraform fmt -check -recursive infra/platform
 terraform -chdir=infra/platform init -backend=false -input=false
 terraform -chdir=infra/platform validate
-terraform -chdir=infra/platform test -test-directory=tests -no-color
-tflint --chdir=infra/platform
-trivy config --exit-code 1 --severity HIGH,CRITICAL infra/platform
 git add infra/platform
 git commit -m "feat: add private Autopilot Fleet platform"
 ~~~
 
-### Task 5: Run the complete proportionate infrastructure check set
+### Task 5: Run the infrastructure validation set
 
 **Files:**
 - Modify: no additional files.
 
 **Interfaces:**
-- Consumes: three Terraform roots and native tests.
-- Produces: repeatable account-free validation without bespoke policy/repository-contract tooling.
+- Consumes: three Terraform roots.
+- Produces: repeatable account-free Terraform validation without bespoke tooling.
 
 - [ ] **Step 1: Run standard Terraform checks**
 
@@ -296,27 +277,15 @@ git commit -m "feat: add private Autopilot Fleet platform"
 terraform fmt -check -recursive infra
 terraform -chdir=infra/bootstrap init -backend=false -input=false
 terraform -chdir=infra/bootstrap validate
-terraform -chdir=infra/bootstrap test -test-directory=tests -no-color
 terraform -chdir=infra/foundation init -backend=false -input=false
 terraform -chdir=infra/foundation validate
-terraform -chdir=infra/foundation test -test-directory=tests -no-color
 terraform -chdir=infra/platform init -backend=false -input=false
 terraform -chdir=infra/platform validate
-terraform -chdir=infra/platform test -test-directory=tests -no-color
 ~~~
 
-- [ ] **Step 2: Run linting and the one security scanner**
+- [ ] **Step 2: Confirm limits and clean state**
 
-~~~bash
-tflint --chdir=infra/bootstrap
-tflint --chdir=infra/foundation
-tflint --chdir=infra/platform
-trivy config --exit-code 1 --severity HIGH,CRITICAL infra
-~~~
-
-- [ ] **Step 3: Confirm limits and clean state**
-
-Expected: PASS with no backend access, credential lookup, Python runtime, or GCP call. These checks prove HCL/schema validity, static scanner results, dependency wiring, and the three critical invariants—not IAM propagation, quotas, state locking, resource creation, Fleet/MCI reconciliation, certificate activation, log ingestion, Connect Gateway authorization, workload rollout, required three ready replicas, or teardown completion. Those are deployment evidence.
+Expected: PASS with no backend access, credential lookup, Python runtime, or GCP call. These checks prove formatting and HCL/schema validity—not IAM propagation, quotas, state locking, resource creation, Fleet/MCI reconciliation, certificate activation, log ingestion, Connect Gateway authorization, workload rollout, required three ready replicas, or teardown completion. Those are deployment evidence.
 
 ~~~bash
 git status --short

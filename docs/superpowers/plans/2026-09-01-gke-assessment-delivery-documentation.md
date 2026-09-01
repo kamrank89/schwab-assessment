@@ -6,7 +6,7 @@
 
 **Architecture:** Terraform owns GCP bootstrap, foundation, and platform resources; Kustomize owns Kubernetes manifests and the two regional overlays. Small Bash scripts supply operator entry points and guards, Make groups standard commands, and GitHub Actions runs credential-free validation plus manually dispatched deployment and teardown using a single OIDC-federated `assessment-deployer` identity. Repository development does not deploy anything.
 
-**Tech Stack:** Terraform, Terraform tests, TFLint, Trivy, Kustomize, Kubeconform, yq, jq, Bash, ShellCheck, actionlint, Make, Google Cloud CLI 582.0.0, GitHub Actions, GitHub OIDC/Google Cloud Workload Identity Federation.
+**Tech Stack:** Terraform, Kustomize, Kubeconform, jq, Bash, ShellCheck, actionlint, crane, Make, Google Cloud CLI 582.0.0, GitHub Actions, GitHub OIDC/Google Cloud Workload Identity Federation.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-gke-assessment-platform-design.md`
 
@@ -21,6 +21,7 @@
 - Protected GitHub environments, required reviewers, CODEOWNERS, and `main` branch protection are recommended production hardening. Document them precisely, but do not require a bespoke setup script or claim they already exist. Destructive teardown confirmation remains mandatory.
 - Teardown requires the exact project ID and literal confirmation `DESTROY <project-id>`, deletes workload/MCI resources before platform and foundation, and must not target bootstrap state, the WIF provider, or the deployer identity.
 - Pin application images by digest and external Actions by full commit SHA. Use fixed versions of standard validation tools. Do not add custom repository-contract tests, plan fingerprints, evidence parsers, fake-cloud command harnesses, or parser/test frameworks; the one small Bash manifest renderer is deployment functionality, not a validation framework.
+- Trivy is an optional local advisory dependency exposed only through `make security-scan`; it is not installed by `make tools` and does not gate credential-free CI, deployment, or teardown.
 - Terraform plans, generated kubeconfigs, tokens, passwords, Secret Manager values, and sensitive output must not enter Git, logs, job summaries, or uploaded artifacts.
 - Documentation must distinguish account-free validation from `deployment-evidence-pending`. No endpoint, screenshot, failover, HPA, BigQuery, Grafana, IAM, or teardown result is live evidence until an authorized run records it.
 
@@ -43,8 +44,7 @@
 │   ├── verify.sh
 │   └── teardown.sh
 ├── infra/{bootstrap,foundation,platform}/
-│   ├── *.tf
-│   └── *.tftest.hcl
+│   └── *.tf
 ├── k8s/
 │   ├── access/
 │   ├── base/
@@ -67,7 +67,7 @@
 └── README.md
 ```
 
-Infrastructure and manifests are supplied by the platform implementation plan. This delivery plan adds the lifecycle, standard validation, workflow, and documentation surface; it may add ordinary Terraform `*.tftest.hcl` files beside a root when that root needs a native configuration assertion.
+Infrastructure and manifests are supplied by the platform implementation plan. This delivery plan adds the lifecycle, standard validation, workflow, and documentation surface without adding a separate test harness.
 
 ### Task 1: Add the small Bash/Make toolchain and standard validation
 
@@ -75,12 +75,12 @@ Infrastructure and manifests are supplied by the platform implementation plan. T
 - Create: `.editorconfig`, `.gitignore`, `Makefile`, `scripts/install-tools.sh`, `tools/{versions.env,checksums.sha256}`
 
 **Interfaces:**
-- Produces Make targets `tools`, `tool-versions`, `fmt`, `validate-terraform`, `validate-kubernetes`, `validate-shell`, `validate-workflows`, `validate-security`, `validate-grafana`, `validate`, `validate-images`, and the guarded human-only `bootstrap` target.
+- Produces Make targets `tools`, `tool-versions`, `fmt`, `validate-terraform`, `validate-kubernetes`, `validate-shell`, `validate-workflows`, `validate-grafana`, `validate`, optional advisory `security-scan`, and the guarded human-only `bootstrap` target.
 - `make validate` is the credential-free developer/CI contract. It does not call `gcloud`, `bq`, Terraform plan/apply, or an external cloud API.
 
 - [ ] **Step 1: Install only fixed standard CLI tools**
 
-Implement `scripts/install-tools.sh` with `set -euo pipefail`. `tools/versions.env` pins Terraform 1.15.9, kubectl 1.35.8, TFLint 0.64.0, Trivy 0.72.0, Kustomize 5.8.1, Kubeconform 0.7.0, yq 4.53.2, jq 1.8.2, ShellCheck 0.11.0, actionlint 1.7.12, and crane 0.21.7. Install those releases into ignored `.tools/bin`. Verify downloaded archives against the simple committed `tools/checksums.sha256` inventory where the publisher supplies checksums, print each version, and fail for a missing binary or unsupported platform. This is a small shell installer, not a custom validation framework; add no language runtime, package manager, or installer library.
+Implement `scripts/install-tools.sh` with `set -euo pipefail`. `tools/versions.env` pins Terraform 1.15.9, kubectl 1.35.8, Kustomize 5.8.1, Kubeconform 0.7.0, jq 1.8.2, ShellCheck 0.11.0, actionlint 1.7.12, and crane 0.21.7. Install those releases into ignored `.tools/bin`. Verify downloaded archives against the simple committed `tools/checksums.sha256` inventory where the publisher supplies checksums, print each version, and fail for a missing binary or unsupported platform. Keep `crane` for the workload plan's manual resolution and verification of pinned Docker Hub digests; it is not a `make validate` gate. Keep Trivy out of this installer: `security-scan` detects it only when a local operator has independently installed it. This is a small shell installer, not a custom validation framework; add no language runtime, package manager, or installer library.
 
 - [ ] **Step 2: Add direct Make targets**
 
@@ -88,9 +88,10 @@ Use simple recipes and explicit Terraform-root loops. This is the validation con
 
 ```make
 SHELL := /usr/bin/env bash
+.SHELLFLAGS := -eu -o pipefail -c
 PATH := $(CURDIR)/.tools/bin:$(PATH)
 
-.PHONY: tools tool-versions bootstrap fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-security validate-images validate
+.PHONY: tools tool-versions bootstrap fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana security-scan validate
 
 tools:
 
@@ -98,7 +99,7 @@ tools:
 
 tool-versions:
 
-	@for tool in terraform kubectl tflint trivy kustomize kubeconform yq jq shellcheck actionlint crane; do \
+	@for tool in terraform kubectl kustomize kubeconform jq shellcheck actionlint crane; do \
 	  command -v $$tool >/dev/null; \
 	  $$tool version 2>/dev/null || $$tool --version; \
 	done
@@ -118,24 +119,12 @@ validate-terraform:
 	@for root in infra/bootstrap infra/foundation infra/platform; do \
 	  terraform -chdir=$$root init -backend=false; \
 	  terraform -chdir=$$root validate; \
-	  terraform -chdir=$$root test; \
-	done
-	@for root in infra/bootstrap infra/foundation infra/platform; do \
-	  tflint --chdir=$$root --init; \
-	  tflint --chdir=$$root; \
 	done
 
 validate-kubernetes:
 
 	@for overlay in k8s/access/us-central1 k8s/access/us-east1 k8s/access/config-us-central1 k8s/overlays/us-central1 k8s/overlays/us-east1 k8s/overlays/config-us-central1/http k8s/overlays/config-us-central1/tls k8s/overlays/config-us-central1/https; do \
 	  kustomize build $$overlay | kubeconform -strict -summary -ignore-missing-schemas; \
-	done
-	@find .github k8s -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | \
-	  xargs -0 -n1 yq eval '.' >/dev/null
-	@for overlay in k8s/overlays/us-central1 k8s/overlays/us-east1; do \
-	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "Deployment" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.replicas] | length == 2 and all(.[]; . == 3)' -; \
-	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "HorizontalPodAutoscaler" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minReplicas] | length == 2 and all(.[]; . == 3)' -; \
-	  kustomize build $$overlay | yq eval-all -e '[select(.kind == "PodDisruptionBudget" and (.metadata.name == "app-a" or .metadata.name == "app-b")) | .spec.minAvailable] | length == 2 and all(.[]; . == 2)' -; \
 	done
 
 validate-shell:
@@ -146,32 +135,26 @@ validate-shell:
 validate-workflows:
 
 	actionlint .github/workflows/*.yml
-	yq -e '.permissions.contents == "read" and (.permissions | length == 1)' .github/workflows/validate.yml >/dev/null
-	yq -e '(.on | has("workflow_dispatch")) and (.on | length == 1)' .github/workflows/deploy.yml >/dev/null
-	yq -e '(.on | has("workflow_dispatch")) and (.on | length == 1)' .github/workflows/teardown.yml >/dev/null
 
 validate-grafana:
 
 	@find k8s/base/grafana/files/dashboards -type f -name '*.json' -print0 | \
 	  xargs -0 -n1 jq empty
-	@test "$$(find k8s/base/grafana/files/dashboards -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')" = 3
-	@jq -e '([.panels[] | select(.type != "row")] | length) == 4' k8s/base/grafana/files/dashboards/assessment-overview.json
 
-validate-security:
+security-scan:
 
-	trivy config --exit-code 1 --severity HIGH,CRITICAL infra
-	trivy config --exit-code 1 --severity HIGH,CRITICAL k8s
+	@if ! command -v trivy >/dev/null; then \
+	  echo "Trivy is optional and not installed; skipping advisory security scan."; \
+	  exit 0; \
+	fi; \
+	trivy config --severity HIGH,CRITICAL infra; \
+	trivy config --severity HIGH,CRITICAL k8s; \
+	set -a; source tools/images.env; set +a; \
+	  for image in "$$APP_A_IMAGE" "$$APP_B_IMAGE" "$$GRAFANA_IMAGE"; do \
+	    trivy image --ignore-unfixed --severity HIGH,CRITICAL "$$image"; \
+	  done
 
-validate-images:
-
-	@set -a; . ./tools/images.env; set +a; \
-	for image in "$$APP_A_IMAGE" "$$APP_B_IMAGE" "$$GRAFANA_IMAGE"; do \
-	  printf '%s' "$$image" | grep -Eq '^docker\.io/.+@sha256:[0-9a-f]{64}$$'; \
-	  crane digest "$$image" >/dev/null; \
-	  trivy image --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL "$$image"; \
-	done
-
-validate: fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-security
+validate: fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana
 ```
 
 `kubeconform -ignore-missing-schemas` permits GKE-specific MCI/MCS resources when published schemas are unavailable while still strictly checking recognized Kubernetes resources. Do not add a broad custom test to replace that tool behavior.
@@ -305,7 +288,7 @@ permissions:
   contents: read
 ```
 
-Use full-SHA-pinned `actions/checkout`, run `make tools`, `make validate`, and `make validate-images`. This workflow has no `id-token: write`, `gcloud`, `bq`, credential, environment, Terraform plan/apply, or deployment command. If retaining reports, upload only rendered manifests and non-sensitive lint/scan results; never upload plans, state, generated kubeconfig, or live evidence.
+Use full-SHA-pinned `actions/checkout`, run `make tools` and `make validate`. This workflow has no `id-token: write`, `gcloud`, `bq`, credential, environment, Terraform plan/apply, deployment command, or Trivy invocation. If retaining reports, upload only rendered manifests and non-sensitive validation results; never upload plans, state, generated kubeconfig, or live evidence.
 
 - [ ] **Step 2: Implement `deploy.yml`**
 
@@ -334,9 +317,6 @@ Run:
 
 ```bash
 actionlint .github/workflows/*.yml
-yq eval '.' .github/workflows/validate.yml >/dev/null
-yq eval '.' .github/workflows/deploy.yml >/dev/null
-yq eval '.' .github/workflows/teardown.yml >/dev/null
 make validate
 ```
 
@@ -383,7 +363,7 @@ Provide exact future commands for account-free validation, installing Google Clo
 
 In `docs/setup/github.md`, recommend protecting `main`, requiring the `validate` check, CODEOWNERS, protected `production`/`teardown` environments, reviewers, prevent-self-review, and deployment-branch restrictions. Explain that changing jobs from the baseline branch subject to Environment subjects requires updating the Terraform WIF allowlist first. These are a production governance checklist, not bespoke prerequisite automation.
 
-Cover OIDC/WIF bootstrap, no-key policy, state handling, image/digest scanning, Secret Manager runtime mounting, Grafana access, rollout/rollback, controlled scaling/failover, DNS/TLS troubleshooting, and reverse-order teardown. Include the planned controlled readiness-probe exercise—symptom, diagnosis, correction, expected recovery, prevention—and label it accurately until executed.
+Cover OIDC/WIF bootstrap, no-key policy, state handling, digest pinning and the optional advisory image scan, Secret Manager runtime mounting, Grafana access, rollout/rollback, controlled scaling/failover, DNS/TLS troubleshooting, and reverse-order teardown. Include the planned controlled readiness-probe exercise—symptom, diagnosis, correction, expected recovery, prevention—and label it accurately until executed.
 
 - [ ] **Step 4: Complete the evidence model without fabricating claims**
 
@@ -414,7 +394,7 @@ git commit -m "docs: add assessment operations and decision record"
 ## Cross-Plan Interface Changes
 
 - The infrastructure plan must expose non-secret bootstrap outputs for `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `GCP_WIF_PROVIDER`, `GCP_DEPLOYER_SERVICE_ACCOUNT`, and `TF_STATE_BUCKET`; this plan writes and consumes them as GitHub repository variables.
-- Terraform roots remain the only cloud-resource source and use only native `*.tftest.hcl` tests. This plan removes Python, pip/pytest, plan-fingerprint summaries, evidence parsers, fake-cloud helpers, and broad repository-contract test suites from the delivery interface; one small Bash manifest renderer remains a deployment function.
+- Terraform roots remain the only cloud-resource source. This plan removes Python, pip/pytest, native Terraform test files, plan-fingerprint summaries, evidence parsers, fake-cloud helpers, and broad repository-contract test suites from the delivery interface; one small Bash manifest renderer remains a deployment function.
 - The Kubernetes plan provides `k8s/access/*`, `k8s/overlays/us-central1`, `k8s/overlays/us-east1`, and `k8s/overlays/config-us-central1/*`, including narrow pipeline RBAC, MCI/MCS, and digest-pinned application images. This plan builds and schema-validates those overlays, applying them only in a future manual workflow.
 - The observability plan provides Grafana dashboard JSON under `k8s/base/grafana/files/dashboards/` and BigQuery SQL under `observability/bigquery/queries/`. Pre-deploy checks validate dashboard JSON only; `bq query --dry_run --use_legacy_sql=false` runs only after OIDC in post-deploy smoke verification.
 - Operations use small Bash entry points and Make, not a custom framework. Deployment/teardown remain manually dispatched with one OIDC-federated identity. Protected environments and branch protection are documented recommendations; destructive teardown confirmation is still enforced.

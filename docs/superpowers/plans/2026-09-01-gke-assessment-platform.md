@@ -6,7 +6,7 @@
 
 **Architecture:** Work is split into three companion plans: Terraform/GCP, Kubernetes/observability, and delivery/documentation. Terraform owns GCP resources, Kustomize owns Kubernetes resources, and small Bash/Make entrypoints plus GitHub Actions run standard validators and future manual deployment commands.
 
-**Tech Stack:** Terraform 1.15.9, Google provider 7.42.0, GKE Autopilot, Fleet MCI/MCS, Kustomize 5.8.1, kubectl 1.35.8, Kubeconform 0.7.0, TFLint 0.64.0, Trivy 0.72.0, ShellCheck 0.11.0, actionlint 1.7.12, crane 0.21.7, yq 4.53.2, jq 1.8.2, Google Cloud CLI 582.0.0, Bash, Make, Grafana, BigQuery SQL, GitHub Actions, Google OIDC/WIF.
+**Tech Stack:** Terraform 1.15.9, Google provider 7.42.0, GKE Autopilot, Fleet MCI/MCS, Kustomize 5.8.1, kubectl 1.35.8, Kubeconform 0.7.0, ShellCheck 0.11.0, actionlint 1.7.12, crane 0.21.7, jq 1.8.2, Google Cloud CLI 582.0.0, Bash, Make, Grafana, BigQuery SQL, GitHub Actions, Google OIDC/WIF. Trivy 0.72.0 is an optional advisory tool, not a required gate.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-gke-assessment-platform-design.md`
 
@@ -39,7 +39,7 @@
 4. Complete the remaining delivery/documentation tasks and integrate the workflows.
 5. Run the standard account-free checks and an independent whole-branch review.
 
-No executor may run credentialed `terraform plan`, `terraform apply`, a mutating `gcloud` command, or `kubectl apply` against GCP while completing these plans. Native `terraform test` may use mock-provider plan runs because those do not authenticate or create resources.
+No executor may run credentialed `terraform plan`, `terraform apply`, a mutating `gcloud` command, or `kubectl apply` against GCP while completing these plans.
 
 ## Locked Repository Map
 
@@ -59,7 +59,6 @@ No executor may run credentialed `terraform plan`, `terraform apply`, a mutating
 ├── scripts/{bootstrap.sh,configure-github-variables.sh,deploy.sh,verify.sh,teardown.sh,install-tools.sh,render-manifests.sh}
 ├── tools/{versions.env,checksums.sha256,images.env}
 ├── docs/{adr,architecture,ci-cd,evidence,observability,operations,requirements,security,setup,troubleshooting}/
-├── .tflint.hcl
 ├── .editorconfig
 ├── .gitignore
 ├── Makefile
@@ -111,7 +110,7 @@ Expected: exit 0; no Python executable, package, lockfile, or source file is int
 
 **Files:**
 - Create/modify: files listed in `2026-09-01-gke-assessment-infrastructure.md`
-- Validate: `infra/*/*.tf`, `infra/*/tests/*.tftest.hcl`, `.tflint.hcl`
+- Validate: `infra/*/*.tf`
 
 **Interfaces:**
 - Consumes: repository identity, project, billing, and parent inputs documented in the companion plan.
@@ -127,7 +126,7 @@ Use a fresh implementer and a fresh task reviewer for each task. Configuration c
 make validate-terraform
 ```
 
-Expected: `terraform fmt -check`, `terraform init -backend=false`, `terraform validate`, the small native mock-provider test set, TFLint, and `trivy config` succeed for all three roots without ADC lookup or cloud mutation.
+Expected: `terraform fmt -check`, `terraform init -backend=false`, and `terraform validate` succeed for all three roots without ADC lookup or cloud mutation.
 
 - [ ] **Step 3: Confirm the reviewed infrastructure slice**
 
@@ -150,17 +149,16 @@ Expected: the infrastructure task commits exist and no infrastructure change rem
 
 - [ ] **Step 1: Execute every workload-plan task**
 
-Use a fresh implementer and reviewer per task. Resolve and scan public image digests before committing manifests; this account-free registry work is not GCP deployment evidence.
+Use a fresh implementer and reviewer per task. Resolve public image digests before committing manifests; this account-free registry work is not GCP deployment evidence.
 
 - [ ] **Step 2: Run the standard workload checks**
 
 ```bash
 make validate-kubernetes
 make validate-grafana
-make validate-images
 ```
 
-Expected: every overlay renders, Kubeconform accepts supported resources, direct `yq` checks prove both apps render at three replicas with HPA minimum three and PDB minimum two, `jq` proves exactly three dashboards and four overview panels, and Trivy accepts every pinned image under the documented severity policy.
+Expected: every overlay renders, Kubeconform accepts resources with supported schemas, and `jq empty` accepts every dashboard export. The three-replica, HPA, PDB, three-dashboard, and four-panel assessment requirements remain explicit in the reviewable files and are confirmed after deployment.
 
 - [ ] **Step 3: Confirm the reviewed workload slice**
 
@@ -200,7 +198,7 @@ make validate-shell
 make validate-workflows
 ```
 
-Expected: `bash -n`, ShellCheck, actionlint, and direct workflow permission/trigger inspection succeed without credentials.
+Expected: `bash -n`, ShellCheck, and actionlint succeed without credentials. Workflow permissions and triggers remain explicit for review.
 
 - [ ] **Step 4: Confirm the reviewed delivery slice**
 
@@ -215,7 +213,6 @@ Expected: the delivery/documentation task commits exist and the implementation w
 
 **Files:**
 - Verify: complete repository
-- Generate ignored output: `artifacts/validate/`
 
 **Interfaces:**
 - Consumes: every preceding deliverable.
@@ -227,15 +224,15 @@ Expected: the delivery/documentation task commits exist and the implementation w
 make validate
 ```
 
-Expected: Terraform, TFLint, Trivy configuration, Kustomize, Kubeconform, yq, jq, ShellCheck, and actionlint commands exit 0. No command authenticates to GCP.
+Expected: Terraform formatting/validation, Kustomize, Kubeconform, `jq empty`, `bash -n`, ShellCheck, and actionlint commands exit 0. No command authenticates to GCP.
 
-- [ ] **Step 2: Run network-dependent image checks separately**
+- [ ] **Step 2: Optionally collect advisory security output**
 
 ```bash
-make validate-images
+make security-scan
 ```
 
-Expected: immutable Docker Hub digests resolve and Trivy reports no unexcepted fixed High or Critical vulnerability.
+Optional: when Trivy 0.72.0 is installed and network access is available, scan Terraform, Kubernetes, and the pinned images for reviewer context. Findings are advisory and this command is excluded from `make validate`, pull-request CI, deployment gates, and the completion definition.
 
 - [ ] **Step 3: Check repository hygiene**
 
@@ -258,7 +255,7 @@ Expected: clean whitespace and no Python source/environment artifact.
 
 - [ ] **Step 1: Follow verification-before-completion**
 
-Re-run `make validate`, `make validate-images`, `git diff --check`, and the no-Python inventory from fresh output.
+Re-run `make validate`, `git diff --check`, and the no-Python inventory from fresh output.
 
 - [ ] **Step 2: Request whole-branch review**
 
@@ -281,4 +278,4 @@ Present integration choices without merging, pushing, deploying, or changing Git
 
 ## Completion Definition
 
-Implementation is complete only when all companion-plan tasks are reviewed, `make validate` and `make validate-images` pass from fresh output, independent review has no unresolved blocking finding, live evidence remains honestly pending, and a future operator needs only a suitable GCP account/project, the documented ADC bootstrap that creates OIDC trust, the resulting GitHub repository variables, and optional owned DNS for HTTPS.
+Implementation is complete only when all companion-plan tasks are reviewed, `make validate` passes from fresh output, independent review has no unresolved blocking finding, live evidence remains honestly pending, and a future operator needs only a suitable GCP account/project, the documented ADC bootstrap that creates OIDC trust, the resulting GitHub repository variables, and optional owned DNS for HTTPS.

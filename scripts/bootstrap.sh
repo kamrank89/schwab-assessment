@@ -10,8 +10,12 @@ OUTPUT_DIR="${REPO_ROOT}/.generated"
 OUTPUT_FILE="${OUTPUT_DIR}/bootstrap-outputs.json"
 BACKEND_FILE="${BOOTSTRAP_ROOT}/backend.generated.tf"
 LOCAL_STATE_FILE="${BOOTSTRAP_ROOT}/terraform.tfstate"
+ERRORED_STATE_FILE="${BOOTSTRAP_ROOT}/errored.tfstate"
+LOCAL_WORKSPACE_STATE_DIR="${BOOTSTRAP_ROOT}/terraform.tfstate.d"
 REMOTE_STATE_OBJECT="bootstrap/default.tfstate"
 REMOTE_STATE_URI=""
+export TF_DATA_DIR="${BOOTSTRAP_ROOT}/.terraform"
+export TF_WORKSPACE="default"
 
 usage() {
   cat <<'USAGE'
@@ -39,14 +43,267 @@ REMOTE_STATE_KIND="absent"
 REMOTE_STATE_FINGERPRINT=""
 REMOTE_BUCKET_PRESENT="false"
 remote_state_snapshot=""
+adc_token_file=""
+
+assert_default_workspace_safety() {
+  local persisted_workspace_file="${TF_DATA_DIR}/environment"
+  local persisted_workspace
+  local -a workspace_entries
+  local -a workspace_contents
+  local workspace_entry
+
+  if [[ -e "${TF_DATA_DIR}" || -L "${TF_DATA_DIR}" ]]; then
+    [[ -d "${TF_DATA_DIR}" && ! -L "${TF_DATA_DIR}" ]] ||
+      die "Terraform data path is not a regular directory; refusing bootstrap recovery."
+  fi
+  if [[ -e "${persisted_workspace_file}" || -L "${persisted_workspace_file}" ]]; then
+    [[ -f "${persisted_workspace_file}" && ! -L "${persisted_workspace_file}" &&
+      -r "${persisted_workspace_file}" ]] ||
+      die "Persisted Terraform workspace selection is not a readable regular file."
+    persisted_workspace="$(<"${persisted_workspace_file}")"
+    [[ "${persisted_workspace}" == "default" ]] ||
+      die "Persisted Terraform workspace is not default. Select and recover it manually before bootstrap."
+  fi
+
+  if [[ -e "${LOCAL_WORKSPACE_STATE_DIR}" || -L "${LOCAL_WORKSPACE_STATE_DIR}" ]]; then
+    [[ -d "${LOCAL_WORKSPACE_STATE_DIR}" && ! -L "${LOCAL_WORKSPACE_STATE_DIR}" ]] ||
+      die "Non-default Terraform workspace state path has a suspicious file type."
+    shopt -s nullglob dotglob
+    workspace_entries=("${LOCAL_WORKSPACE_STATE_DIR}"/*)
+    for workspace_entry in "${workspace_entries[@]}"; do
+      [[ -d "${workspace_entry}" && ! -L "${workspace_entry}" ]] ||
+        die "Non-default Terraform workspace path contains a suspicious entry."
+      workspace_contents=("${workspace_entry}"/*)
+      ((${#workspace_contents[@]} == 0)) ||
+        die "Non-default local Terraform workspace state exists under terraform.tfstate.d; recover it manually before bootstrap."
+    done
+    shopt -u nullglob dotglob
+  fi
+}
+
+assert_no_errored_state() {
+  if [[ -e "${ERRORED_STATE_FILE}" || -L "${ERRORED_STATE_FILE}" ]]; then
+    die "infra/bootstrap/errored.tfstate exists. Review it and recover manually with 'terraform state push'; bootstrap will not use or delete it."
+  fi
+}
+
+refresh_adc_token() {
+  install -m 0600 /dev/null "${adc_token_file}"
+  if ! gcloud auth application-default print-access-token >"${adc_token_file}" 2>/dev/null; then
+    : >"${adc_token_file}"
+    die "Application Default Credentials are unavailable. Run gcloud auth application-default login as a human operator."
+  fi
+  [[ -s "${adc_token_file}" ]] || die "Application Default Credentials returned an empty access token."
+  chmod 0600 "${adc_token_file}"
+}
+
+validate_managed_state_contract() {
+  local state_file="$1"
+  local location="$2"
+  local expected_subject="repo:${GITHUB_REPOSITORY}:ref:refs/heads/main"
+  local expected_pipeline_email="assessment-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+  local expected_provider_condition
+  local state_project_number
+  local expected_repository_member
+  local expected_provider_audience
+
+  expected_provider_condition="assertion.repository_id == '${GITHUB_REPOSITORY_ID}' && assertion.repository_owner_id == '${GITHUB_OWNER_ID}' && assertion.sub == '${expected_subject}'"
+
+  jq -e --arg project "${PROJECT_ID}" --arg bucket "${STATE_BUCKET}" \
+    --arg repository "${GITHUB_REPOSITORY}" --arg subject "${expected_subject}" '
+      .outputs.effective_project_id.type == "string" and
+      (.outputs.effective_project_id.value | type == "string") and
+      .outputs.effective_project_id.value == $project and
+      .outputs.terraform_state_bucket.type == "string" and
+      (.outputs.terraform_state_bucket.value | type == "string") and
+      .outputs.terraform_state_bucket.value == $bucket and
+      .outputs.github_repository.type == "string" and
+      (.outputs.github_repository.value | type == "string") and
+      .outputs.github_repository.value == $repository and
+      .outputs.allowed_subject.type == "string" and
+      (.outputs.allowed_subject.value | type == "string") and
+      .outputs.allowed_subject.value == $subject
+    ' "${state_file}" >/dev/null ||
+    die "The ${location} resource-bearing state lacks exact typed bootstrap ownership outputs; manual recovery is required."
+
+  state_project_number="$(jq -er '
+    select(.outputs.project_number.type == "string") |
+    .outputs.project_number.value |
+    select(type == "string" and test("^[1-9][0-9]{5,19}$"))
+  ' "${state_file}")" ||
+    die "The ${location} resource-bearing state lacks a typed numeric project-number output; manual recovery is required."
+  expected_repository_member="principalSet://iam.googleapis.com/projects/${state_project_number}/locations/global/workloadIdentityPools/github-actions/attribute.repository_id/${GITHUB_REPOSITORY_ID}"
+  expected_provider_audience="https://iam.googleapis.com/projects/${state_project_number}/locations/global/workloadIdentityPools/github-actions/providers/github"
+
+  jq -e '
+      [
+        ["data", "google_project", "effective"],
+        ["managed", "google_project", "assessment"],
+        ["managed", "google_project_service", "required"],
+        ["managed", "google_storage_bucket", "terraform_state"],
+        ["managed", "google_service_account", "pipeline"],
+        ["managed", "google_service_account_iam_member", "github_repository"],
+        ["managed", "google_project_iam_member", "pipeline"],
+        ["managed", "google_storage_bucket_iam_member", "pipeline"],
+        ["managed", "google_iam_workload_identity_pool", "github_actions"],
+        ["managed", "google_iam_workload_identity_pool_provider", "github"]
+      ] as $allowed |
+      all(.resources[];
+        (.module? == null) and
+        .provider == "provider[\"registry.terraform.io/hashicorp/google\"]" and
+        ([.mode, .type, .name] as $signature | ($allowed | index($signature)) != null) and
+        (.instances | type == "array" and length > 0) and
+        all(.instances[];
+          (.attributes | type == "object") and
+          ((.deposed? // null) == null) and
+          ((.status? // "ready") == "ready")
+        )
+      )
+    ' "${state_file}" >/dev/null ||
+    die "The ${location} resource-bearing state contains an unexpected bootstrap resource signature or incomplete instance; manual recovery is required."
+
+  jq -e '
+      .resources as $resources |
+      [
+        ["data", "google_project", "effective"],
+        ["managed", "google_project_service", "required"],
+        ["managed", "google_storage_bucket", "terraform_state"],
+        ["managed", "google_service_account", "pipeline"],
+        ["managed", "google_service_account_iam_member", "github_repository"],
+        ["managed", "google_project_iam_member", "pipeline"],
+        ["managed", "google_storage_bucket_iam_member", "pipeline"],
+        ["managed", "google_iam_workload_identity_pool", "github_actions"],
+        ["managed", "google_iam_workload_identity_pool_provider", "github"]
+      ] as $required |
+      all($required[];
+        . as $required_signature |
+        any($resources[]; [.mode, .type, .name] == $required_signature)
+      )
+    ' "${state_file}" >/dev/null ||
+    die "The ${location} resource-bearing state is a partial or older bootstrap state without all core anchors; manual recovery is required."
+
+  jq -e --arg project "${PROJECT_ID}" --arg bucket "${STATE_BUCKET}" \
+    --arg pipeline_email "${expected_pipeline_email}" \
+    --arg repository_member "${expected_repository_member}" \
+    --arg provider_condition "${expected_provider_condition}" \
+    --arg provider_audience "${expected_provider_audience}" '
+      [
+        "cloudbilling.googleapis.com",
+        "cloudresourcemanager.googleapis.com",
+        "iam.googleapis.com",
+        "iamcredentials.googleapis.com",
+        "serviceusage.googleapis.com",
+        "storage.googleapis.com",
+        "sts.googleapis.com"
+      ] as $services |
+      [
+        "roles/bigquery.admin",
+        "roles/compute.admin",
+        "roles/container.admin",
+        "roles/dns.admin",
+        "roles/gkehub.admin",
+        "roles/gkehub.gatewayAdmin",
+        "roles/gkehub.viewer",
+        "roles/iam.serviceAccountAdmin",
+        "roles/logging.configWriter",
+        "roles/monitoring.viewer",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/secretmanager.admin",
+        "roles/serviceusage.serviceUsageAdmin"
+      ] as $project_roles |
+      ["roles/storage.legacyBucketReader", "roles/storage.objectAdmin"] as $bucket_roles |
+      all(.resources[];
+        .mode as $mode | .type as $type | .name as $name |
+        all(.instances[];
+          .attributes as $a |
+          if $mode == "data" and $type == "google_project" and $name == "effective" then
+            $a.project_id == $project
+          elif $type == "google_project" and $name == "assessment" then
+            $a.project_id == $project and $a.deletion_policy == "ABANDON"
+          elif $type == "google_project_service" and $name == "required" then
+            $a.project == $project and .index_key == $a.service and ($services | index($a.service)) != null
+          elif $type == "google_storage_bucket" and $name == "terraform_state" then
+            $a.name == $bucket and $a.project == $project
+          elif $type == "google_service_account" and $name == "pipeline" then
+            $a.project == $project and $a.account_id == "assessment-deployer" and $a.email == $pipeline_email
+          elif $type == "google_service_account_iam_member" and $name == "github_repository" then
+            $a.role == "roles/iam.workloadIdentityUser" and
+            $a.member == $repository_member and
+            ($a.service_account_id | endswith("/serviceAccounts/" + $pipeline_email))
+          elif $type == "google_project_iam_member" and $name == "pipeline" then
+            $a.project == $project and $a.member == ("serviceAccount:" + $pipeline_email) and
+            .index_key == $a.role and
+            ($project_roles | index($a.role)) != null
+          elif $type == "google_storage_bucket_iam_member" and $name == "pipeline" then
+            $a.bucket == $bucket and $a.member == ("serviceAccount:" + $pipeline_email) and
+            .index_key == $a.role and
+            ($bucket_roles | index($a.role)) != null
+          elif $type == "google_iam_workload_identity_pool" and $name == "github_actions" then
+            $a.project == $project and $a.workload_identity_pool_id == "github-actions"
+          elif $type == "google_iam_workload_identity_pool_provider" and $name == "github" then
+            $a.project == $project and $a.workload_identity_pool_id == "github-actions" and
+            $a.workload_identity_pool_provider_id == "github" and
+            $a.attribute_condition == $provider_condition and
+            $a.oidc[0].issuer_uri == "https://token.actions.githubusercontent.com" and
+            ($a.oidc[0].allowed_audiences | type == "array" and . == [$provider_audience])
+          else false
+          end
+        )
+      )
+    ' "${state_file}" >/dev/null ||
+    die "The ${location} resource-bearing state contains bootstrap resources bound to unexpected cloud identities; manual recovery is required."
+
+  jq -e '
+      def keys_for($type; $name):
+        [.resources[] | select(.mode == "managed" and .type == $type and .name == $name) |
+          .instances[].index_key] | sort;
+      def instance_count($mode; $type; $name):
+        [.resources[] | select(.mode == $mode and .type == $type and .name == $name) |
+          .instances[]] | length;
+      instance_count("data"; "google_project"; "effective") == 1 and
+      instance_count("managed"; "google_project"; "assessment") <= 1 and
+      instance_count("managed"; "google_storage_bucket"; "terraform_state") == 1 and
+      instance_count("managed"; "google_service_account"; "pipeline") == 1 and
+      instance_count("managed"; "google_service_account_iam_member"; "github_repository") == 1 and
+      instance_count("managed"; "google_iam_workload_identity_pool"; "github_actions") == 1 and
+      instance_count("managed"; "google_iam_workload_identity_pool_provider"; "github") == 1 and
+      keys_for("google_project_service"; "required") == ([
+        "cloudbilling.googleapis.com",
+        "cloudresourcemanager.googleapis.com",
+        "iam.googleapis.com",
+        "iamcredentials.googleapis.com",
+        "serviceusage.googleapis.com",
+        "storage.googleapis.com",
+        "sts.googleapis.com"
+      ] | sort) and
+      keys_for("google_project_iam_member"; "pipeline") == ([
+        "roles/bigquery.admin",
+        "roles/compute.admin",
+        "roles/container.admin",
+        "roles/dns.admin",
+        "roles/gkehub.admin",
+        "roles/gkehub.gatewayAdmin",
+        "roles/gkehub.viewer",
+        "roles/iam.serviceAccountAdmin",
+        "roles/logging.configWriter",
+        "roles/monitoring.viewer",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/secretmanager.admin",
+        "roles/serviceusage.serviceUsageAdmin"
+      ] | sort) and
+      keys_for("google_storage_bucket_iam_member"; "pipeline") == ([
+        "roles/storage.legacyBucketReader",
+        "roles/storage.objectAdmin"
+      ] | sort)
+    ' "${state_file}" >/dev/null ||
+    die "The ${location} resource-bearing state has incomplete or unexpected bootstrap for_each instances; manual recovery is required."
+}
 
 inspect_state_file() {
   local state_file="$1"
   local location="$2"
   local resource_count
   local fingerprint
-  local state_project
-  local state_bucket
 
   if [[ ! -e "${state_file}" ]]; then
     case "${location}" in
@@ -66,20 +323,15 @@ inspect_state_file() {
     die "The ${location} bootstrap state snapshot is not a readable regular file."
   jq -e '
     type == "object" and
-    (.version | type == "number") and
+    .version == 4 and
     (.serial | type == "number") and
     (.lineage | type == "string" and length > 0) and
     ((.resources // []) | type == "array")
   ' "${state_file}" >/dev/null || die "The ${location} bootstrap state snapshot is malformed."
 
   resource_count="$(jq -er '(.resources // []) | length' "${state_file}")"
-  state_project="$(jq -r '.outputs.effective_project_id.value // ""' "${state_file}")"
-  state_bucket="$(jq -r '.outputs.terraform_state_bucket.value // ""' "${state_file}")"
-  if [[ -n "${state_project}" && "${state_project}" != "${PROJECT_ID}" ]]; then
-    die "The ${location} bootstrap state belongs to a different project."
-  fi
-  if [[ -n "${state_bucket}" && "${state_bucket}" != "${STATE_BUCKET}" ]]; then
-    die "The ${location} bootstrap state belongs to a different state bucket."
+  if ((resource_count > 0)); then
+    validate_managed_state_contract "${state_file}" "${location}"
   fi
   read -r fingerprint _ < <(
     jq -cS '{
@@ -125,7 +377,9 @@ inspect_remote_state() {
   REMOTE_BUCKET_PRESENT="false"
   REMOTE_STATE_KIND="absent"
   REMOTE_STATE_FINGERPRINT=""
-  if ! bucket_inventory="$(gcloud storage buckets list --project="${PROJECT_ID}" --format=json 2>/dev/null)"; then
+  refresh_adc_token
+  if ! bucket_inventory="$(gcloud --access-token-file="${adc_token_file}" storage buckets list \
+    --project="${PROJECT_ID}" --format=json 2>/dev/null)"; then
     die "Could not inspect the state bucket; refusing to treat an access or API error as absence."
   fi
   bucket_count="$(jq -er --arg bucket "${STATE_BUCKET}" \
@@ -137,7 +391,9 @@ inspect_remote_state() {
   fi
   REMOTE_BUCKET_PRESENT="true"
 
-  if ! object_inventory="$(gcloud storage objects list "gs://${STATE_BUCKET}" --format=json 2>/dev/null)"; then
+  refresh_adc_token
+  if ! object_inventory="$(gcloud --access-token-file="${adc_token_file}" storage objects list \
+    "gs://${STATE_BUCKET}" --format=json 2>/dev/null)"; then
     die "Could not inspect state objects; refusing to treat an access or API error as absence."
   fi
   object_count="$(jq -er --arg object "${REMOTE_STATE_OBJECT}" \
@@ -149,7 +405,9 @@ inspect_remote_state() {
   fi
 
   install -m 0600 /dev/null "${remote_state_snapshot}"
-  if ! gcloud storage cat "${REMOTE_STATE_URI}" >"${remote_state_snapshot}" 2>/dev/null; then
+  refresh_adc_token
+  if ! gcloud --access-token-file="${adc_token_file}" storage cat \
+    "${REMOTE_STATE_URI}" >"${remote_state_snapshot}" 2>/dev/null; then
     die "Remote bootstrap state exists but could not be read."
   fi
   inspect_state_file "${remote_state_snapshot}" remote
@@ -244,12 +502,11 @@ done
 gcloud version --format=json 2>/dev/null |
   jq -e '."Google Cloud SDK" == "582.0.0"' >/dev/null ||
   die "Google Cloud CLI 582.0.0 is required."
-gcloud auth application-default print-access-token >/dev/null 2>&1 ||
-  die "Application Default Credentials are unavailable. Run gcloud auth application-default login as a human operator."
 
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/gke-assessment-bootstrap.XXXXXX")"
 chmod 0700 "${temporary_root}"
 remote_state_snapshot="${temporary_root}/remote-bootstrap.tfstate"
+adc_token_file="${temporary_root}/adc-access-token"
 temporary_output=""
 cleanup() {
   rm -f -- "${BACKEND_FILE}"
@@ -263,6 +520,9 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+assert_default_workspace_safety
+assert_no_errored_state
+refresh_adc_token
 inspect_local_state
 inspect_remote_state
 selected_backend=""

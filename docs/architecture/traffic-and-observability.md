@@ -11,6 +11,7 @@ sequenceDiagram
   participant MCI as MCI/MCS
   participant Pod as Healthy regional Pod
   participant Logging as Cloud Logging
+  participant Monitoring as Cloud Monitoring
   participant BQ as BigQuery assessment_logs
   participant Grafana
 
@@ -26,8 +27,9 @@ sequenceDiagram
   Pod-->>Logging: stdout/stderr and platform logs
   LB-->>Logging: sampled backend request logs
   Logging-->>BQ: partitioned sink export
+  Pod-->>Monitoring: platform and workload metrics
+  Grafana->>Monitoring: Cloud Monitoring datasource queries
   Grafana->>BQ: time-bounded log queries
-  Grafana->>Logging: Google Cloud datasource queries
 ```
 
 The MultiClusterIngress uses the Terraform-reserved global IPv4 address and path rules `/app-a` and `/app-b`. Both MultiClusterServices select Pods in both clusters. BackendConfigs define application-specific health paths, 30-second connection draining, 100% load-balancer log sampling, and the Cloud Armor policy. Google's controller creates the load-balancer resources; Terraform does not duplicate controller ownership.

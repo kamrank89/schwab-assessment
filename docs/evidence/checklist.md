@@ -49,14 +49,16 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 - [ ] any actual query uses a bounded UTC/partition window; output is minimized and redacted
 - [ ] Grafana Deployment has one Ready/available primary-cluster replica
 - [ ] exactly three dashboard exports provisioned
-- [ ] dashboard artifact is either the committed JSON export or a redacted live screenshot
+- [ ] dashboard artifact is the committed JSON export; a redacted live screenshot is optional and requires a separately approved temporary human IAM/RBAC access record outside the baseline
 - [ ] screenshot/export shows the four overview panels: error rate, restarts, p50/p95/p99 latency, CPU/memory
 
 ## Optional exercises — only if deliberately selected
 
-- [ ] HPA record shows exact confirmation, baseline, temporary four-replica reconciliation for both apps, and restored three-replica state
+- [ ] HPA drill record shows exact confirmation, baseline, temporary four-replica reconciliation for both apps, and committed-overlay reapplication/rollout completion
+- [ ] a subsequent smoke record independently proves exact three-replica restoration before that claim is promoted
 - [ ] HPA is described as controller reconciliation, not CPU load evidence
-- [ ] failover record shows exact confirmation, selected region, five consecutive successful route checks, and restored three-replica state
+- [ ] failover drill record shows exact confirmation, selected region, five consecutive successful route checks, and committed-overlay reapplication/rollout completion
+- [ ] a subsequent smoke record independently proves exact three-replica restoration before that claim is promoted
 - [ ] failover is described as application-backend removal, not cluster/regional infrastructure outage
 - [ ] if an exercise was not selected, mark it `not-applicable` for that run
 

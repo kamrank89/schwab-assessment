@@ -87,10 +87,11 @@ For Grafana, verify the Pod is Ready, the BigQuery plugin installed, three dashb
 This is a future controlled troubleshooting demonstration, not a historical incident.
 
 - **Injected condition:** under an approved test change, set one application's readiness path to a known invalid path in one region while leaving liveness unchanged.
-- **Expected symptom:** the new Pods run but remain `0/3 Ready`; rollout times out; the affected MCI backend becomes unhealthy and global traffic should use the other healthy region.
-- **Diagnosis:** compare Deployment probe configuration with the image health contract, inspect `kubectl describe pod`, events, readiness failures, rollout status, and MCI backend health. Do not start by deleting Pods.
+- **Expected symptom:** because the Deployment uses `maxUnavailable: 0` and `maxSurge: 1`, the three old Pods remain healthy and Ready while one surge Pod with the bad probe stays unready. The rollout stalls at three healthy old Pods plus one unready new Pod; it does not produce `0/3 Ready`.
+- **Traffic effect:** the existing regional Service endpoints and MCI backend remain healthy through the old Pods, so this normal rolling-update failure is not expected to trigger regional backend failover. A different concurrent failure could change that outcome and must be recorded separately rather than assumed.
+- **Diagnosis:** compare the new ReplicaSet's probe configuration with the image health contract; inspect Deployment/ReplicaSet conditions, `kubectl describe pod`, events, readiness failures, rollout status, endpoint slices, and MCI backend health. Confirm that the old ReplicaSet still supplies the three Ready endpoints. Do not start by deleting Pods.
 - **Correction:** revert the probe path to `/healthz` for App A or `/health` for App B in source, pass account-free validation, merge through review, and redeploy.
-- **Expected recovery:** three Ready replicas return in the affected region, rollout succeeds, all MCI backends become healthy, and both global routes return the expected status class.
+- **Expected recovery:** a corrected surge Pod becomes Ready, allowing the controller to replace old Pods one at a time while preserving availability. The rollout completes; a subsequent `verify.sh smoke` or deploy-workflow smoke record must prove the exact three desired/Ready/updated/available replicas and healthy global routes. Backend recovery is not claimed because the normal scenario did not make the backend unhealthy.
 - **Prevention:** document image health endpoints, exercise them in pre-production, review probe changes through CODEOWNERS, use bounded rollout gates, and retain the healthy cross-region backend during changes.
 
-When authorized and executed, record actual UTC times, commit, workflow, commands, redacted outputs, correction, recovery, and reviewer. Until then its evidence status is `deployment-evidence-pending`.
+When authorized and executed, record actual UTC times, commit, workflow, commands, redacted outputs, the retained old-Pod availability, correction, recovery smoke, and reviewer. Until then its evidence status is `deployment-evidence-pending`.

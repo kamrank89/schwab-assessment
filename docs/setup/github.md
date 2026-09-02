@@ -36,17 +36,19 @@ These controls are manual recommendations, not prerequisites automated by this r
 
 GitHub documents [required checks and branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches), [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners), and [Environment reviewers and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
 
-## WIF subject migration before Environments
+## Immutable WIF subject and Environment migration
 
-Today every privileged job has a branch-based OIDC subject:
+This repository uses GitHub's immutable default subject format for repositories created after 2026-07-15. The public repository OIDC metadata reports an immutable prefix, and bootstrap derives the active names and numeric IDs from its validated inputs. Every baseline privileged job must therefore present exactly:
 
 ```text
-repo:OWNER/REPO:ref:refs/heads/main
+repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID:ref:refs/heads/main
 ```
 
-When a job references a GitHub Environment, GitHub changes the subject to include the Environment. The current Terraform provider condition will reject it. The safe order is:
+Terraform also checks the numeric `repository_id` and `repository_owner_id` claims separately and binds service-account impersonation through a repository-ID `principalSet`. Repositories created before the cutoff, GitHub Enterprise Server repositories, and some forks can have a different active subject. Before bootstrap, a repository administrator must either opt a legacy github.com repository into immutable subjects or deliberately adapt and review the trust policy to match its previewed subject. Do not assume that names, IDs, or a copied trust policy match.
 
-1. Determine and review the exact `production` and `teardown` subjects from GitHub's [OIDC subject reference](https://docs.github.com/en/actions/reference/security/oidc).
+When a job references a GitHub Environment, GitHub replaces the branch suffix with an Environment suffix. With the active immutable prefix, the two proposed subjects are `repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID:environment:production` and `repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID:environment:teardown`. The current Terraform provider condition rejects both. The safe order is:
+
+1. Preview and review the exact active `production` and `teardown` subjects using GitHub's [OIDC subject reference](https://docs.github.com/en/actions/reference/security/oidc) and [OIDC REST API](https://docs.github.com/en/rest/actions/oidc).
 2. Modify `infra/bootstrap/wif.tf` and bootstrap recovery validation to allow only those exact subjects plus immutable repository/owner IDs.
 3. **Cloud IAM mutation:** apply the reviewed bootstrap change using the existing state, and verify federation.
 4. Add `environment: production` and `environment: teardown` to the relevant workflow jobs.

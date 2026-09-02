@@ -13,6 +13,18 @@ make validate
 
 `make validate` runs Terraform formatting and `init -backend=false` validation, Kustomize/Kubeconform schema validation, Bash syntax and ShellCheck, actionlint, and Grafana JSON parsing. GKE-specific schemas may be reported as skipped by Kubeconform; recognized Kubernetes schemas must still be valid. The command never authenticates, plans, applies, accesses a cluster, runs Trivy, or proves live behavior.
 
+## GitHub CLI for operator convenience
+
+The setup and lifecycle examples use the supported-current GitHub CLI to set repository variables and dispatch or inspect workflows. Install it using GitHub's [official installation and quickstart guidance](https://docs.github.com/en/github-cli/github-cli/quickstart), then authenticate to the intended GitHub host/account and confirm the session:
+
+```bash
+# GITHUB AUTHENTICATION; does not authenticate to Google Cloud.
+gh auth login
+gh auth status
+```
+
+Review the host, account, and token scopes shown by `gh auth status` before any repository administration. The CLI is operator convenience, not a repository validation dependency: `make validate` and pull-request validation do not require `gh` or a GitHub login. GitHub documents the command's supported authentication modes in the [`gh auth login` reference](https://cli.github.com/manual/gh_auth_login).
+
 ## Google Cloud CLI 582.0.0
 
 Human bootstrap requires exactly Google Cloud CLI 582.0.0. Authenticated workflow jobs install the same version with `gke-gcloud-auth-plugin` and `bq`. For an isolated Linux x86-64 installation from Google's versioned archive:

@@ -4,7 +4,7 @@ This repository demonstrates a coherent assessment architecture; it is not a pro
 
 - **No live proof:** no cloud authentication, plan/apply, endpoint, IAM evaluation, secret mount, dashboard, query result, failover, HPA response, teardown, or residual check has been run for this delivery.
 - **One broad deployer:** `assessment-deployer` spans creation, verification, and destruction. Production needs identity/role separation and independent approval.
-- **Baseline WIF subject:** only the `main` branch subject is allowed. Protected GitHub Environments are recommended but require a WIF-first subject migration and are not configured by repository automation.
+- **Baseline WIF subject:** only the immutable owner-ID/repository-ID `main` branch subject is allowed. A legacy repository or fork must opt in or deliberately adapt/review trust before bootstrap. Protected GitHub Environments are recommended but require a WIF-first subject migration and are not configured by repository automation.
 - **HTTP-first endpoint:** the immediately deployable path is unencrypted HTTP by IP. Production needs an owned domain, active TLS, appropriate redirect/HSTS policy, and security review.
 - **Private nodes, reachable Google API endpoint:** node IPs are private and cluster IP endpoints are disabled, but the GKE DNS control-plane endpoint allows external traffic through Google APIs and relies on IAM/RBAC. Consider VPC Service Controls, Private Service Connect/Private Google Access, and runner placement for production.
 - **Cloud Armor posture:** rate limiting is enforced; SQLi/XSS rules are preview-only. Tune and observe rules before enforcement, add organization-specific allow/deny/bot/DDoS controls, and test false positives.

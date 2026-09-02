@@ -253,7 +253,7 @@ git commit -m "feat: add staged MCI and MCS routing"
 
 - Consumes: Terraform output values GRAFANA_GSA_EMAIL, GCP_PROJECT_NUMBER, GCP_PROJECT_ID, and BIGQUERY_DATASET, plus a Grafana digest, Cloud Monitoring, and the routed-log dataset.
 - Produces: observability/grafana KSA, SecretProviderClass, one ClusterIP Grafana Deployment, datasource provisioning, and exactly three dashboard exports.
-- Consumed by: future authenticated port-forward and evidence steps; Grafana is never an MCI target.
+- Consumed by: automated smoke provisioning checks and committed dashboard-export evidence; Grafana is never an MCI target. The baseline does not grant a documented human Connect Gateway/RBAC path for interactive port-forward access.
 
 - [ ] **Step 1: Resolve Grafana**
 

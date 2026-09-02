@@ -22,7 +22,7 @@
 - Provision one internal, recoverable Grafana instance and exactly three dashboard exports; the overview dashboard contains exactly the four assessment panels.
 - Route application, node, control-plane, and load-balancer logs to a partitioned BigQuery dataset and include timestamp-bounded queries.
 - Federate exactly one GitHub pipeline identity, `assessment-deployer`, for plan, apply, delivery, verification, and teardown; keep runtime identities narrow and separate.
-- Restrict baseline GitHub OIDC to the immutable repository/owner identifiers and exact `repo:<OWNER/REPO>:ref:refs/heads/main` subject; document protected Environments and split identities as production hardening, not baseline prerequisites.
+- Restrict baseline GitHub OIDC to the immutable repository/owner identifiers and exact `repo:<OWNER>@<OWNER_ID>/<REPO>@<REPOSITORY_ID>:ref:refs/heads/main` subject used by this repository's post-2026-07-15 GitHub default. Legacy repositories/forks must opt in or deliberately adapt and review trust before bootstrap. Environment subjects append `:environment:<name>` to the active immutable prefix, so apply the WIF update before workflow jobs; document protected Environments and split identities as production hardening, not baseline prerequisites.
 - Store no service-account key, static kubeconfig, saved Terraform plan artifact, secret value, or fabricated live evidence in Git.
 - Require one human ADC bootstrap; after bootstrap, cloud workflows use only GitHub OIDC/WIF.
 - Keep `validate.yml` credential-free. Only manual `deploy.yml` and `teardown.yml` may request `id-token: write`.

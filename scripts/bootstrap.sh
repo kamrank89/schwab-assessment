@@ -100,7 +100,9 @@ refresh_adc_token() {
 validate_managed_state_contract() {
   local state_file="$1"
   local location="$2"
-  local expected_subject="repo:${GITHUB_REPOSITORY}:ref:refs/heads/main"
+  local github_owner="${GITHUB_REPOSITORY%%/*}"
+  local github_repository_name="${GITHUB_REPOSITORY#*/}"
+  local expected_subject="repo:${github_owner}@${GITHUB_OWNER_ID}/${github_repository_name}@${GITHUB_REPOSITORY_ID}:ref:refs/heads/main"
   local expected_pipeline_email="assessment-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
   local expected_provider_condition
   local state_project_number

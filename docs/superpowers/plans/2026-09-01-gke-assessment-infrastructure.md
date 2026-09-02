@@ -144,7 +144,7 @@ Expected: Google 7.42.0 and both Linux checksums are recorded per root; formatti
 
 - [ ] **Step 1: Implement validated project selection and durable state**
 
-Validate non-empty project/bucket IDs, numeric GitHub IDs, and github_repository with ^[^/]+/[^/]+$. A new project requires billing, allows at most one folder/organization parent, uses auto_create_network = false and deletion_policy = "ABANDON"; attachment never mutates creation-only billing/parent inputs. Derive `allowed_subject` exactly as `repo:<OWNER/REPO>:ref:refs/heads/main`.
+Validate non-empty project/bucket IDs, numeric GitHub IDs, and github_repository with ^[^/]+/[^/]+$. A new project requires billing, allows at most one folder/organization parent, uses auto_create_network = false and deletion_policy = "ABANDON"; attachment never mutates creation-only billing/parent inputs. For this repository's active GitHub immutable default, derive `allowed_subject` exactly as `repo:<OWNER>@<OWNER_ID>/<REPO>@<REPOSITORY_ID>:ref:refs/heads/main` from those validated inputs. Repositories created before 2026-07-15 and forks must opt in to immutable subjects or deliberately adapt and review the trust policy before bootstrap.
 
 Create the versioned, uniform-access, public-access-prevented state bucket with force_destroy = false and a ten-newer-version lifecycle rule. Grant the pipeline identity only bucket-scoped roles/storage.objectAdmin and roles/storage.legacyBucketReader.
 
@@ -152,7 +152,7 @@ Create the versioned, uniform-access, public-access-prevented state bucket with 
 
 Own cloudbilling.googleapis.com, cloudresourcemanager.googleapis.com, iam.googleapis.com, iamcredentials.googleapis.com, serviceusage.googleapis.com, storage.googleapis.com, and sts.googleapis.com with disable_on_destroy = false.
 
-Create pool github-actions, provider github, issuer https://token.actions.githubusercontent.com, and the Google auth Action audience containing the effective project number. Map google.subject, actor_id, repository_id, repository_owner_id, and ref from the matching immutable GitHub assertions. The attribute condition exactly checks immutable repository/owner IDs plus `assertion.sub == "repo:<OWNER/REPO>:ref:refs/heads/main"`; do not accept an Environment subject in the baseline. Create only assessment-deployer and bind WIF through its immutable repository-ID principal set.
+Create pool github-actions, provider github, issuer https://token.actions.githubusercontent.com, and the Google auth Action audience containing the effective project number. Map google.subject, actor_id, repository_id, repository_owner_id, and ref from the matching immutable GitHub assertions. The attribute condition exactly checks immutable repository/owner IDs plus `assertion.sub == "repo:<OWNER>@<OWNER_ID>/<REPO>@<REPOSITORY_ID>:ref:refs/heads/main"`; do not accept an Environment subject in the baseline. An Environment subject appends `:environment:<name>` to the active immutable repository prefix, so update and apply WIF before assigning an Environment to a workflow job. Create only assessment-deployer and bind WIF through its immutable repository-ID principal set.
 
 Grant this exact predefined-role union:
 

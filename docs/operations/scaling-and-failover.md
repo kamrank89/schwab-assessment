@@ -19,7 +19,7 @@ The workflow invokes:
 ./scripts/verify.sh hpa --region us-central1 --confirm "HPA us-central1"
 ```
 
-The script verifies the healthy three-replica baseline, temporarily patches both HPA `minReplicas` to 4, waits for four Ready replicas, then reapplies the committed regional overlay and requires the three-replica baseline to return. This proves HPA controller reconciliation and restoration, not CPU-driven autoscaling under load. The extra Pods add temporary Autopilot and MCI backend-Pod cost.
+The script verifies the healthy three-replica baseline, temporarily patches both HPA `minReplicas` to 4, waits for four Ready replicas, then reapplies the committed regional overlay and waits for both Deployment rollouts. Its restoration record proves configuration reapplication and rollout completion, not the exact post-restoration replica state. Run a subsequent `./scripts/verify.sh smoke` or rerun the deploy workflow before claiming the exact three desired/Ready/updated/available replicas. The exercise proves HPA controller reconciliation, not CPU-driven autoscaling under load. The extra Pods add temporary Autopilot and MCI backend-Pod cost.
 
 ## Application failover exercise
 
@@ -38,10 +38,10 @@ The workflow invokes:
 ./scripts/verify.sh failover --region us-east1 --confirm "FAILOVER us-east1"
 ```
 
-The script first establishes a healthy three-replica baseline, deletes only App A and App B Deployments in the chosen region, and requires five consecutive successful checks of both global routes. Its armed trap reapplies the committed overlay and requires both Deployments to return to three Ready replicas even after a catchable interruption.
+The script first establishes a healthy three-replica baseline, deletes only App A and App B Deployments in the chosen region, and requires five consecutive successful checks of both global routes. Its armed trap reapplies the committed overlay and waits for both Deployment rollouts after a catchable interruption. That restoration record proves configuration reapplication and rollout completion; a subsequent `./scripts/verify.sh smoke` or deploy-workflow rerun is required before claiming the exact three desired/Ready/updated/available replicas.
 
 Call this a controlled application-backend failover exercise. The cluster remains running and other resources remain present; it is not evidence of regional infrastructure failure.
 
 ## Combined dispatch and evidence
 
-If both booleans are true, HPA runs before failover. Run one at a time for clearer evidence unless a reviewed test plan requires the sequence. Before execution define stop conditions, observers, expected codes, and the restoration owner. Afterward capture the redacted report, workflow URL, UTC times, commit, actor/reviewer, and explicit restoration result. A drill row remains `deployment-evidence-pending` until this record exists.
+If both booleans are true, HPA runs before failover. Run one at a time for clearer evidence unless a reviewed test plan requires the sequence. Before execution define stop conditions, observers, expected codes, and the restoration owner. Afterward capture the redacted drill report, workflow URL, UTC times, commit, actor/reviewer, and configuration-reapplication result. Attach the subsequent smoke record separately before claiming exact three-replica restoration. A drill row remains `deployment-evidence-pending` until both required records exist.

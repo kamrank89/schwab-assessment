@@ -24,8 +24,10 @@ flowchart LR
 The bootstrap provider admits only the immutable GitHub repository ID and owner ID plus the exact baseline subject:
 
 ```text
-repo:OWNER/REPO:ref:refs/heads/main
+repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID:ref:refs/heads/main
 ```
+
+This repository uses GitHub's immutable default subject format, introduced for repositories created after 2026-07-15. Terraform derives the names and numeric IDs from the validated bootstrap inputs; it also retains separate numeric owner/repository claim checks and the repository-ID `principalSet` binding. A legacy repository or fork can still emit the former name-only subject. Its administrator must opt in to immutable subjects, or deliberately adapt and review the Google trust policy, before bootstrap; copying this policy without matching the active GitHub subject will fail closed.
 
 GitHub's token is exchanged through the GCP Workload Identity Federation provider, then impersonates the single `assessment-deployer` Google service account. No service-account key is created or stored. Repository variables contain only non-secret project, provider, service-account, state-bucket, region, HTTPS, and DNS identifiers.
 
@@ -42,6 +44,6 @@ Each identity should have purpose-built custom roles or the narrowest predefined
 
 ## Environment-subject hardening caveat
 
-The baseline workflows do not name GitHub Environments, because GitHub changes the OIDC `sub` claim when a job references an Environment. Before adding `environment: production` or `environment: teardown` to any job, update `infra/bootstrap/wif.tf` and the bootstrap state contract to allow the exact Environment subjects, apply that WIF change safely, and only then change the workflow jobs. Reversing that order locks the workflows out.
+The baseline workflows do not name GitHub Environments, because GitHub replaces the branch suffix when a job references an Environment. For this immutable format the Environment subjects append `:environment:production` or `:environment:teardown` to the active `repo:OWNER@OWNER_ID/REPO@REPOSITORY_ID` prefix. Before adding `environment: production` or `environment: teardown` to any job, update `infra/bootstrap/wif.tf` and the bootstrap state contract to allow only those exact subjects, apply and verify that WIF change, and only then change the workflow jobs. Reversing that order locks the workflows out.
 
 See [ADR 0003](../adr/0003-single-oidc-identity.md), [GitHub hardening](../setup/github.md), and [IAM and secrets](../security/iam-and-secrets.md).

@@ -47,21 +47,11 @@ curl --silent --show-error --output /dev/null --write-out '%{http_code}\n' \
 
 For HTTPS, use the owned hostname and expect HTTP 3xx then HTTPS 2xx. Record UTC time, commit, actor, command, status class, and artifact location; do not record application bodies.
 
-## Grafana access
+## Grafana access boundary
 
-Grafana is cluster-internal. Obtain a fresh Connect Gateway kubeconfig and port-forward:
+The committed baseline does not promise interactive human access to the cluster-internal Grafana service. It grants the workflow identity the Connect Gateway and Kubernetes authorization needed for automated delivery and smoke checks, but it does not grant a documented human principal the corresponding IAM-plus-RBAC path for `kubectl port-forward`. Do not impersonate the pipeline identity or infer human access from its permissions.
 
-```bash
-# LIVE READ ACCESS; no intended cloud mutation.
-export ASSESSMENT_KUBECONFIG="$(mktemp)"
-chmod 0600 "${ASSESSMENT_KUBECONFIG}"
-KUBECONFIG="${ASSESSMENT_KUBECONFIG}" gcloud container fleet memberships get-credentials \
-  gke-assessment-us-central1 --location=global --project="${GCP_PROJECT_ID}" --quiet
-KUBECONFIG="${ASSESSMENT_KUBECONFIG}" kubectl -n observability \
-  port-forward service/grafana 3000:3000
-```
-
-Open `http://127.0.0.1:3000`, use user `admin`, and retrieve the password through an approved Secret Manager path without printing, logging, or placing it in a screenshot. Remove the temporary kubeconfig after stopping the port-forward. A screenshot must redact user, project, query rows, and browser/session data; the committed JSON exports are the preferred assessment artifact.
+Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and exactly three dashboard JSON files are provisioned. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login. A live UI screenshot requires a separately approved, temporary human access design outside this baseline, including explicit identity, least-privilege IAM/RBAC, Secret Manager access, expiry, audit ownership, and redaction. Until that path is approved and exercised, do not publish a port-forward command or claim a screenshot.
 
 ## Optional exercises
 

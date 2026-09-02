@@ -1,6 +1,8 @@
 locals {
-  effective_project_id = var.project_id
-  allowed_subject      = "repo:${var.github_repository}:ref:refs/heads/main"
+  effective_project_id   = var.project_id
+  github_owner           = split("/", var.github_repository)[0]
+  github_repository_name = split("/", var.github_repository)[1]
+  allowed_subject        = "repo:${local.github_owner}@${var.github_owner_id}/${local.github_repository_name}@${var.github_repository_id}:ref:refs/heads/main"
 
   required_services = toset([
     "cloudbilling.googleapis.com",

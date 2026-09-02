@@ -216,7 +216,7 @@ Two identity systems remain deliberately separate:
 - GitHub OIDC to Google Cloud external WIF authenticates CI jobs.
 - GKE Workload Identity authenticates Kubernetes ServiceAccounts to Google APIs.
 
-The WIF provider condition binds trust to immutable GitHub repository and owner IDs and the exact `repo:<OWNER/REPO>:ref:refs/heads/main` subject. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster. Immediately after cluster creation, the workflow uses each IAM-aware DNS endpoint once with an ephemeral kubeconfig to install the narrowly resource-named Connect Gateway impersonation policy; all subsequent workload delivery and verification uses Connect Gateway. This avoids a circular dependency in which the gateway would be required to install its own initial authorization.
+The WIF provider condition binds trust to immutable GitHub repository and owner IDs and the exact `repo:<OWNER>@<OWNER_ID>/<REPO>@<REPOSITORY_ID>:ref:refs/heads/main` subject used by this repository's GitHub default for repositories created after 2026-07-15. Terraform derives all four components from validated inputs, checks both numeric claims separately, and uses the repository-ID principal set. A legacy repository or fork must opt in to immutable subjects or deliberately adapt and review the trust policy before bootstrap. Environment subjects append `:environment:<name>` to the active immutable repository prefix; WIF must be updated and applied before any workflow job adopts an Environment. All privileged pipeline jobs impersonate the same `assessment-deployer` service account. Kubernetes authorization remains separate from Connect Gateway IAM: the pipeline receives namespace-scoped workload RBAC on both clusters plus the platform RBAC required to administer MCI objects on the configuration cluster. Immediately after cluster creation, the workflow uses each IAM-aware DNS endpoint once with an ephemeral kubeconfig to install the narrowly resource-named Connect Gateway impersonation policy; all subsequent workload delivery and verification uses Connect Gateway. This avoids a circular dependency in which the gateway would be required to install its own initial authorization.
 
 Using one pipeline identity is an intentional assessment simplification. It reduces OIDC, IAM, Terraform, GitHub-variable, and troubleshooting overhead, but its union of plan, infrastructure mutation, workload deployment, verification, and teardown permissions creates a larger blast radius than a production separation-of-duties model. The compensating controls are short-lived OIDC credentials, immutable repository-ID trust, no OIDC permission in pull-request validation, `main`-only manual deployment, full-SHA Action pinning, concurrency controls, and auditable workflows. The identity ADR will recommend protected GitHub Environments plus separate read-only planner, infrastructure deployer, namespace workload deployer, and tightly controlled teardown or break-glass identities for production.
 
@@ -247,7 +247,7 @@ Binary Authorization is provided as a documented future control. Enforcement beg
 
 ### Grafana
 
-Grafana runs as a single, recoverable, configuration-as-code deployment in the primary cluster. It is a `ClusterIP` service and is accessed through an authenticated port-forward by default, avoiding a second public administrative endpoint. Its official Docker Hub image, BigQuery plugin version, data sources, folders, and dashboards are pinned and provisioned from repository artifacts.
+Grafana runs as a single, recoverable, configuration-as-code deployment in the primary cluster. It is a `ClusterIP` service, avoiding a second public administrative endpoint. The baseline grants no documented human principal the combined Connect Gateway IAM and Kubernetes RBAC needed for interactive port-forward access; automated smoke verifies only Pod readiness and configuration provisioning. Its official Docker Hub image, BigQuery plugin version, data sources, folders, and dashboards are pinned and provisioned from repository artifacts. The committed exports satisfy the assessment; a live screenshot requires a separately approved temporary access path outside the baseline.
 
 The baseline provisions three dashboards:
 
@@ -262,9 +262,9 @@ The assessment overview dashboard includes at least these four panels:
 3. **Request latency:** p50, p95, and p99 from the load balancer's distribution-valued backend latency metric.
 4. **Resource utilization:** Cloud Monitoring GKE container CPU and memory trends.
 
-Dashboard variables cover cluster, region, namespace, and application. The committed dashboard JSON files are assessment-ready exports. A live screenshot is not fabricated; the evidence runbook explains how to capture one after deployment.
+Dashboard variables cover cluster, region, namespace, and application. The committed dashboard JSON files are assessment-ready exports. A live screenshot is not fabricated; the evidence runbook records that it needs a separately approved temporary human access path outside the baseline.
 
-A dedicated `observability/grafana` Kubernetes ServiceAccount impersonates a narrowly scoped Google service account through GKE Workload Identity. The service account receives `roles/monitoring.viewer`, dataset-scoped `roles/bigquery.dataViewer`, project-scoped `roles/bigquery.jobUser`, and the minimum project-read permission required by the data-source plugins. Both data sources use Google metadata-server (`gce`) authentication. Post-deployment verification proves BigQuery and Monitoring queries work and confirms that no service-account key file is mounted.
+A dedicated `observability/grafana` Kubernetes ServiceAccount impersonates a narrowly scoped Google service account through GKE Workload Identity. The service account receives `roles/monitoring.viewer`, dataset-scoped `roles/bigquery.dataViewer`, project-scoped `roles/bigquery.jobUser`, and the minimum project-read permission required by the data-source plugins. Both data sources use Google metadata-server (`gce`) authentication. Baseline smoke proves only Grafana Pod readiness and provisioned configuration; it does not execute UI datasource queries. Datasource results require a separately approved evidence path. No service-account key file is mounted by the manifests.
 
 Cloud Trace, Profiler, and application-internal metrics are documented as instrumentation boundaries. The APIs may be enabled, but the repository will not claim useful application traces or profiles from images that do not emit them.
 
@@ -336,9 +336,9 @@ The bootstrap is the only unavoidable initial trust step. Routine workflows use 
 - Three ready pods per application per cluster.
 - HTTP and optional HTTPS endpoint results for both paths.
 - MCI backend health and a controlled regional failover exercise.
-- HPA response to generated load.
+- Controlled HPA minimum-replica reconciliation; no generated-load or capacity claim.
 - BigQuery table/schema discovery and sample query results.
-- Grafana screenshots in addition to the committed exports.
+- Committed Grafana exports; a live screenshot only through a separately approved temporary human access path.
 - IAM negative tests and Secret Manager mount verification.
 - Teardown result and residual-resource check.
 
@@ -346,15 +346,17 @@ Evidence that requires a GCP account is marked `deployment evidence pending` rat
 
 ## 14. Troubleshooting Scenario
 
-The repository includes a reproducible controlled exercise that introduces an invalid readiness probe path. The exercise records:
+The repository documents a planned controlled exercise that introduces an invalid readiness probe path. With `maxUnavailable: 0` and `maxSurge: 1`, the exercise records:
 
-1. The symptom: pods run but never become Ready, leaving no healthy service endpoints.
-2. Initial evidence from Deployment conditions, pod status, events, endpoint slices, and container logs.
+1. The symptom: one surge Pod runs but never becomes Ready while all three healthy old Pods remain available; the rollout stalls rather than reaching `0/3 Ready`.
+2. Initial evidence from Deployment and ReplicaSet conditions, pod status, events, endpoint slices, and container logs, including the retained old endpoints.
 3. The hypothesis and rejected alternatives.
 4. The root cause: health-check path mismatch.
 5. The manifest correction.
-6. Verification that all three replicas become Ready and the service answers.
+6. Verification that the corrected rollout advances one Pod at a time, followed by smoke evidence for exactly three desired/Ready/updated/available replicas and successful routes.
 7. Cleanup and prevention through explicit readiness probes plus Kubeconform and rendered-manifest review.
+
+Because the old Pods continue serving, this normal bad-probe rollout is not expected to make the regional MCI backend unhealthy or demonstrate regional failover.
 
 It is labeled as a controlled troubleshooting drill. After a real GCP deployment, the same structure records any actual MCI, certificate, IAM, or observability issue without rewriting history.
 

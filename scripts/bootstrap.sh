@@ -393,7 +393,7 @@ inspect_remote_state() {
 
   refresh_adc_token
   if ! object_inventory="$(gcloud --access-token-file="${adc_token_file}" storage objects list \
-    "gs://${STATE_BUCKET}" --format=json 2>/dev/null)"; then
+    "gs://${STATE_BUCKET}/bootstrap/**" --format=json 2>/dev/null)"; then
     die "Could not inspect state objects; refusing to treat an access or API error as absence."
   fi
   object_count="$(jq -er --arg object "${REMOTE_STATE_OBJECT}" \

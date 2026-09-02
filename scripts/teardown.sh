@@ -14,7 +14,10 @@ LOAD_BALANCER_TIMEOUT_SECONDS=1800
 MCI_NAMESPACE="assessment"
 MCI_NAME="assessment-ingress"
 INVENTORY_DIR="${REPO_ROOT}/.generated"
-INVENTORY_FILE="${INVENTORY_DIR}/teardown-controller-inventory.json"
+INVENTORY_FILE=""
+REMOTE_INVENTORY_OBJECT=""
+REMOTE_INVENTORY_URI=""
+REMOTE_INVENTORY_PRESENT="false"
 
 usage() {
   cat <<'USAGE'
@@ -70,6 +73,9 @@ done
 [[ -n "${GCP_WIF_PROVIDER:-}" ]] || die "GCP_WIF_PROVIDER is required for the retained-resource report."
 [[ -n "${GCP_DEPLOYER_SERVICE_ACCOUNT:-}" ]] ||
   die "GCP_DEPLOYER_SERVICE_ACCOUNT is required for the retained-resource report."
+INVENTORY_FILE="${INVENTORY_DIR}/teardown-controller-inventory-${PROJECT_ID}.json"
+REMOTE_INVENTORY_OBJECT="recovery/teardown-controller-inventory-${PROJECT_ID}.json"
+REMOTE_INVENTORY_URI="gs://${TF_STATE_BUCKET}/${REMOTE_INVENTORY_OBJECT}"
 
 if [[ "${GITHUB_ACTIONS:-false}" == "true" ]]; then
   [[ "${GITHUB_REF:-}" == "refs/heads/main" ]] || die "Teardown may run only from the main branch."
@@ -78,13 +84,14 @@ else
     die "Teardown may run only from the main branch."
 fi
 
-for command_name in git terraform jq gcloud kubectl stat; do
+for command_name in git terraform jq gcloud kubectl sha256sum stat; do
   require_command "${command_name}"
 done
 
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/gke-assessment-teardown.XXXXXX")"
 chmod 0700 "${temporary_root}"
 inventory_candidate=""
+remote_inventory_snapshot="${temporary_root}/remote-controller-inventory.json"
 cleanup() {
   if [[ -n "${inventory_candidate}" ]]; then
     rm -f -- "${inventory_candidate}"
@@ -307,13 +314,14 @@ capture_controller_inventory() {
     if lookup_compute_resource target-https-proxy global "${resource_name}"; then
       https_exists=true
     fi
-    if [[ "${http_exists}:${https_exists}" == "true:false" ]]; then
+    if [[ "${http_exists}" == "true" ]]; then
       printf 'target-http-proxy\tglobal\tglobal\t%s\n' "${resource_name}" >>"${resolved_inventory}"
-    elif [[ "${http_exists}:${https_exists}" == "false:true" ]]; then
-      printf 'target-https-proxy\tglobal\tglobal\t%s\n' "${resource_name}" >>"${resolved_inventory}"
-    else
-      die "Could not uniquely resolve a controller target proxy from MultiClusterIngress status."
     fi
+    if [[ "${https_exists}" == "true" ]]; then
+      printf 'target-https-proxy\tglobal\tglobal\t%s\n' "${resource_name}" >>"${resolved_inventory}"
+    fi
+    [[ "${http_exists}:${https_exists}" != "false:false" ]] ||
+      die "A controller target proxy from MultiClusterIngress status is absent in both Compute proxy kinds."
   done <"${raw_inventory}"
   [[ -s "${resolved_inventory}" ]] || die "Controller resource inventory is empty."
 }
@@ -425,12 +433,14 @@ preflight_inventory() {
 validate_persisted_inventory_contents() {
   local inventory_file="$1"
 
-  jq -e --arg project "${PROJECT_ID}" --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
+  jq -e --arg project "${PROJECT_ID}" --arg bucket "${TF_STATE_BUCKET}" \
+    --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
     .resources as $resources |
-    (keys | sort) == ["captured_at_utc", "mci", "preflighted", "project_id", "resources", "version"] and
+    (keys | sort) == ["captured_at_utc", "mci", "preflighted", "project_id", "resources", "state_bucket", "version"] and
     .version == 1 and
     .preflighted == true and
     .project_id == $project and
+    .state_bucket == $bucket and
     (.captured_at_utc | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
     (.mci | type == "object") and
     (.mci | keys | sort) == ["name", "namespace", "uid"] and
@@ -475,19 +485,103 @@ validate_persisted_inventory_contents() {
     die "Persisted teardown inventory is invalid or does not match this project/MultiClusterIngress; recover it manually before teardown."
 }
 
-persist_preflighted_inventory() {
-  local inventory_tsv="$1"
-  local mci_uid="$2"
-
+ensure_inventory_directory() {
   if [[ -e "${INVENTORY_DIR}" || -L "${INVENTORY_DIR}" ]]; then
     [[ -d "${INVENTORY_DIR}" && ! -L "${INVENTORY_DIR}" ]] ||
       die "Ignored .generated path is not a regular directory; refusing inventory persistence."
   else
     install -d -m 0700 "${INVENTORY_DIR}"
   fi
+}
+
+FILE_DIGEST=""
+
+calculate_file_digest() {
+  local source_file="$1"
+
+  read -r FILE_DIGEST _ < <(sha256sum "${source_file}")
+  [[ "${FILE_DIGEST}" =~ ^[a-f0-9]{64}$ ]] || die "Could not calculate recovery inventory digest."
+}
+
+discover_remote_inventory() {
+  local destination_file="$1"
+  local object_inventory
+  local object_count
+
+  REMOTE_INVENTORY_PRESENT="false"
+  install -m 0600 /dev/null "${destination_file}"
+  if ! object_inventory="$(gcloud storage objects list \
+    "gs://${TF_STATE_BUCKET}/recovery/**" --format=json 2>/dev/null)"; then
+    die "Could not inspect durable teardown recovery storage; refusing to treat an access or API error as absence."
+  fi
+  object_count="$(jq -er --arg object "${REMOTE_INVENTORY_OBJECT}" \
+    '[.[] | select(.name == $object)] | length' <<<"${object_inventory}")" ||
+    die "Durable teardown recovery object discovery returned malformed JSON."
+  [[ "${object_count}" == "0" || "${object_count}" == "1" ]] ||
+    die "Durable teardown recovery object discovery returned an ambiguous result."
+  if [[ "${object_count}" == "0" ]]; then
+    return 0
+  fi
+  if ! gcloud storage cat "${REMOTE_INVENTORY_URI}" >"${destination_file}" 2>/dev/null; then
+    die "Durable teardown recovery inventory exists but could not be read."
+  fi
+  chmod 0600 "${destination_file}"
+  validate_persisted_inventory_contents "${destination_file}"
+  REMOTE_INVENTORY_PRESENT="true"
+}
+
+restore_remote_inventory_if_present() {
+  local remote_digest
+  local restored_digest
+
+  discover_remote_inventory "${remote_inventory_snapshot}"
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] || return 0
+  ensure_inventory_directory
+  if [[ -e "${INVENTORY_FILE}" || -L "${INVENTORY_FILE}" ]]; then
+    [[ -f "${INVENTORY_FILE}" && ! -L "${INVENTORY_FILE}" && -O "${INVENTORY_FILE}" ]] ||
+      die "Local teardown recovery path has a suspicious file type or owner."
+  fi
+  calculate_file_digest "${remote_inventory_snapshot}"
+  remote_digest="${FILE_DIGEST}"
+  inventory_candidate="$(mktemp "${INVENTORY_DIR}/teardown-controller-inventory.XXXXXX")"
+  install -m 0600 "${remote_inventory_snapshot}" "${inventory_candidate}"
+  validate_persisted_inventory_contents "${inventory_candidate}"
+  calculate_file_digest "${inventory_candidate}"
+  restored_digest="${FILE_DIGEST}"
+  [[ "${restored_digest}" == "${remote_digest}" ]] ||
+    die "Local restoration of durable teardown inventory changed its content."
+  mv -fT -- "${inventory_candidate}" "${INVENTORY_FILE}"
+  inventory_candidate=""
+  chmod 0600 "${INVENTORY_FILE}"
+}
+
+confirm_durable_inventory() {
+  local local_digest
+  local remote_digest
+
+  calculate_file_digest "${INVENTORY_FILE}"
+  local_digest="${FILE_DIGEST}"
+  if ! gcloud storage cp "${INVENTORY_FILE}" "${REMOTE_INVENTORY_URI}" --quiet >/dev/null; then
+    die "Could not upload durable teardown recovery inventory; no Kubernetes mutation was attempted."
+  fi
+  discover_remote_inventory "${remote_inventory_snapshot}"
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
+    die "Uploaded teardown recovery inventory was not discoverable; no Kubernetes mutation was attempted."
+  calculate_file_digest "${remote_inventory_snapshot}"
+  remote_digest="${FILE_DIGEST}"
+  [[ "${remote_digest}" == "${local_digest}" ]] ||
+    die "Durable teardown recovery inventory digest differs from the validated local inventory."
+}
+
+persist_preflighted_inventory() {
+  local inventory_tsv="$1"
+  local mci_uid="$2"
+
+  ensure_inventory_directory
   inventory_candidate="$(mktemp "${INVENTORY_DIR}/teardown-controller-inventory.XXXXXX")"
   chmod 0600 "${inventory_candidate}"
-  jq -Rn --arg project "${PROJECT_ID}" --arg namespace "${MCI_NAMESPACE}" \
+  jq -Rn --arg project "${PROJECT_ID}" --arg bucket "${TF_STATE_BUCKET}" \
+    --arg namespace "${MCI_NAMESPACE}" \
     --arg name "${MCI_NAME}" --arg uid "${mci_uid}" \
     --arg captured_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" '
       [inputs | split("\t") |
@@ -496,6 +590,7 @@ persist_preflighted_inventory() {
         version: 1,
         preflighted: true,
         project_id: $project,
+        state_bucket: $bucket,
         captured_at_utc: $captured_at,
         mci: {namespace: $namespace, name: $name, uid: $uid},
         resources: .
@@ -506,6 +601,7 @@ persist_preflighted_inventory() {
   mv -fT -- "${inventory_candidate}" "${INVENTORY_FILE}"
   inventory_candidate=""
   chmod 0600 "${INVENTORY_FILE}"
+  confirm_durable_inventory
 }
 
 load_persisted_inventory() {
@@ -524,16 +620,26 @@ audit_persisted_inventory_access() {
   local resource_scope
   local resource_location
   local resource_name
+  local present_count=0
+  local absent_count=0
 
   while IFS=$'\t' read -r resource_kind resource_scope resource_location resource_name; do
-    lookup_compute_resource "${resource_kind}" "${resource_location}" "${resource_name}" || true
+    if lookup_compute_resource "${resource_kind}" "${resource_location}" "${resource_name}"; then
+      present_count=$((present_count + 1))
+    else
+      absent_count=$((absent_count + 1))
+    fi
   done < <(jq -r '.resources[] | [.kind, .scope, .location, .name] | @tsv' "${INVENTORY_FILE}")
+  printf 'Audited durable controller inventory: %d present, %d already absent.\n' \
+    "${present_count}" "${absent_count}"
 }
 
 wait_for_controller_cleanup() {
   local inventory_file="$1"
   local deadline=$((SECONDS + LOAD_BALANCER_TIMEOUT_SECONDS))
   local resource_kind
+  local resource_scope
+  local resource_location
   local resource_name
   local remaining_count
 
@@ -545,7 +651,7 @@ wait_for_controller_cleanup() {
       fi
     done < <(jq -r '.resources[] | [.kind, .scope, .location, .name] | @tsv' "${inventory_file}")
     if ((remaining_count == 0)); then
-      printf '%s\n' 'All controller-managed MultiClusterIngress cloud resources have been removed.'
+      printf '%s\n' 'All recorded controller-managed resources are deleted or were already absent.'
       return 0
     fi
     sleep 20
@@ -553,63 +659,140 @@ wait_for_controller_cleanup() {
   die "${remaining_count} inventoried controller-managed cloud resources remain after the bounded timeout."
 }
 
-dns_primary="${temporary_root}/dns-primary.kubeconfig"
-dns_secondary="${temporary_root}/dns-secondary.kubeconfig"
-get_dns_credentials "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}" "${dns_primary}"
-get_dns_credentials "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}" "${dns_secondary}"
+CLUSTER_PRESENT="false"
 
-mci_json="$(KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" get \
-  "multiclusteringress.networking.gke.io/${MCI_NAME}" --ignore-not-found -o json)" ||
-  die "MultiClusterIngress lookup failed; refusing Kubernetes or Terraform mutation."
-if [[ -n "${mci_json}" ]]; then
-  mci_uid="$(jq -er --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
-    select(.metadata.namespace == $namespace and .metadata.name == $name) |
-    .metadata.uid |
-    select(type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
-  ' <<<"${mci_json}")" || die "MultiClusterIngress identity is malformed."
-  raw_inventory="${temporary_root}/mci-controller-inventory.raw.tsv"
-  resolved_inventory="${temporary_root}/mci-controller-inventory.resolved.tsv"
-  enriched_inventory="${temporary_root}/mci-controller-inventory.enriched.tsv"
-  controller_inventory="${temporary_root}/mci-controller-inventory.final.tsv"
-  capture_controller_inventory "${mci_json}" "${raw_inventory}" "${resolved_inventory}"
-  append_backend_negs "${resolved_inventory}" "${enriched_inventory}"
-  deduplicate_inventory "${enriched_inventory}" "${controller_inventory}"
-  preflight_inventory "${controller_inventory}"
-  persist_preflighted_inventory "${controller_inventory}" "${mci_uid}"
-  printf '%s\n' 'Persisted the exact preflighted controller inventory before Kubernetes deletion.'
-else
+inspect_cluster_existence() {
+  local cluster_name="$1"
+  local cluster_region="$2"
+  local cluster_inventory
+  local cluster_count
+
+  CLUSTER_PRESENT="false"
+  if ! cluster_inventory="$(gcloud container clusters list --location="${cluster_region}" \
+    --project="${PROJECT_ID}" --format=json 2>/dev/null)"; then
+    die "Could not inspect cluster ${cluster_name}; refusing to treat an access or API error as absence."
+  fi
+  cluster_count="$(jq -er --arg name "${cluster_name}" --arg location "${cluster_region}" '
+    [.[] | select(.name == $name and ((.location // .zone // "") == $location))] | length
+  ' <<<"${cluster_inventory}")" || die "Cluster inventory response is malformed."
+  [[ "${cluster_count}" == "0" || "${cluster_count}" == "1" ]] ||
+    die "Cluster discovery for ${cluster_name} returned an ambiguous result."
+  if [[ "${cluster_count}" == "1" ]]; then
+    CLUSTER_PRESENT="true"
+  fi
+}
+
+require_durable_inventory() {
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
+    die "The primary cluster or MultiClusterIngress is absent without validated durable recovery inventory at ${REMOTE_INVENTORY_URI}. Restore the cluster/MCI or recover and upload the exact inventory before teardown."
   load_persisted_inventory
-  audit_persisted_inventory_access
-  printf '%s\n' 'MultiClusterIngress is absent; resuming from its matching persisted controller inventory.'
+}
+
+remove_recovery_inventories() {
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
+    die "Durable recovery inventory unexpectedly became unavailable before final cleanup."
+  if ! gcloud storage rm --all-versions "${REMOTE_INVENTORY_URI}" --quiet >/dev/null; then
+    die "Teardown completed but the exact durable recovery object could not be removed; the local copy was retained."
+  fi
+  rm -f -- "${INVENTORY_FILE}"
+  REMOTE_INVENTORY_PRESENT="false"
+}
+
+restore_remote_inventory_if_present
+if [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]]; then
+  printf '%s\n' 'Validated durable teardown recovery inventory before cluster discovery.'
+else
+  printf '%s\n' 'No durable teardown recovery inventory exists; a live MCI must be fully preflighted before mutation.'
 fi
 
-printf '%s\n' 'Deleting MultiClusterIngress and MultiClusterService resources first.'
-KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-  "multiclusteringress.networking.gke.io/${MCI_NAME}" \
-  --ignore-not-found --wait=true --timeout=20m
-KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-  multiclusterservice.networking.gke.io/app-a-mcs \
-  multiclusterservice.networking.gke.io/app-b-mcs \
-  --ignore-not-found --wait=true --timeout=20m
-KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-  frontendconfig.networking.gke.io/assessment-https \
-  backendconfig.cloud.google.com/app-a-backend \
-  backendconfig.cloud.google.com/app-b-backend \
-  --ignore-not-found --wait=true --timeout=10m
+inspect_cluster_existence "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}"
+primary_cluster_present="${CLUSTER_PRESENT}"
+inspect_cluster_existence "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}"
+secondary_cluster_present="${CLUSTER_PRESENT}"
+
+dns_primary=""
+dns_secondary=""
+mci_present="false"
+if [[ "${primary_cluster_present}" == "true" ]]; then
+  dns_primary="${temporary_root}/dns-primary.kubeconfig"
+  get_dns_credentials "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}" "${dns_primary}"
+  mci_json="$(KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" get \
+    "multiclusteringress.networking.gke.io/${MCI_NAME}" --ignore-not-found -o json)" ||
+    die "MultiClusterIngress lookup failed; refusing Kubernetes or Terraform mutation."
+  if [[ -n "${mci_json}" ]]; then
+    mci_present="true"
+    mci_uid="$(jq -er --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
+      select(.metadata.namespace == $namespace and .metadata.name == $name) |
+      .metadata.uid |
+      select(type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+    ' <<<"${mci_json}")" || die "MultiClusterIngress identity is malformed."
+    raw_inventory="${temporary_root}/mci-controller-inventory.raw.tsv"
+    resolved_inventory="${temporary_root}/mci-controller-inventory.resolved.tsv"
+    enriched_inventory="${temporary_root}/mci-controller-inventory.enriched.tsv"
+    controller_inventory="${temporary_root}/mci-controller-inventory.final.tsv"
+    capture_controller_inventory "${mci_json}" "${raw_inventory}" "${resolved_inventory}"
+    append_backend_negs "${resolved_inventory}" "${enriched_inventory}"
+    deduplicate_inventory "${enriched_inventory}" "${controller_inventory}"
+    preflight_inventory "${controller_inventory}"
+    persist_preflighted_inventory "${controller_inventory}" "${mci_uid}"
+    printf '%s\n' 'Persisted and read-back-verified the exact controller inventory before Kubernetes deletion.'
+  else
+    require_durable_inventory
+    printf '%s\n' 'MultiClusterIngress is already absent; resuming from durable recovery inventory.'
+  fi
+else
+  require_durable_inventory
+  printf '%s\n' 'Primary cluster is already absent; resuming from durable recovery inventory.'
+fi
+
+audit_persisted_inventory_access
+
+if [[ "${secondary_cluster_present}" == "true" ]]; then
+  dns_secondary="${temporary_root}/dns-secondary.kubeconfig"
+  get_dns_credentials "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}" "${dns_secondary}"
+fi
+
+if [[ "${primary_cluster_present}" == "true" ]]; then
+  printf '%s\n' 'Deleting applicable config-cluster resources.'
+  if [[ "${mci_present}" == "true" ]]; then
+    KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
+      "multiclusteringress.networking.gke.io/${MCI_NAME}" \
+      --wait=true --timeout=20m
+  fi
+  KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
+    multiclusterservice.networking.gke.io/app-a-mcs \
+    multiclusterservice.networking.gke.io/app-b-mcs \
+    --ignore-not-found --wait=true --timeout=20m
+  KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
+    frontendconfig.networking.gke.io/assessment-https \
+    backendconfig.cloud.google.com/app-a-backend \
+    backendconfig.cloud.google.com/app-b-backend \
+    --ignore-not-found --wait=true --timeout=10m
+else
+  printf '%s\n' 'Primary cluster is absent; its Kubernetes resources are already removed.'
+fi
 
 wait_for_controller_cleanup "${INVENTORY_FILE}"
 
-printf '%s\n' 'Deleting regional workload and namespace resources.'
-KUBECONFIG="${dns_secondary}" kubectl delete namespace assessment observability \
-  --ignore-not-found --wait=true --timeout=10m
-KUBECONFIG="${dns_primary}" kubectl delete namespace assessment observability \
-  --ignore-not-found --wait=true --timeout=10m
-for kubeconfig in "${dns_primary}" "${dns_secondary}"; do
-  KUBECONFIG="${kubeconfig}" kubectl delete \
+printf '%s\n' 'Deleting regional workload, namespace, and access resources where clusters remain.'
+if [[ "${secondary_cluster_present}" == "true" ]]; then
+  KUBECONFIG="${dns_secondary}" kubectl delete namespace assessment observability \
+    --ignore-not-found --wait=true --timeout=10m
+  KUBECONFIG="${dns_secondary}" kubectl delete \
     clusterrole/assessment-deployer-gateway-impersonation \
     clusterrolebinding/assessment-deployer-gateway-impersonation \
     --ignore-not-found --wait=true --timeout=5m
-done
+else
+  printf '%s\n' 'Secondary cluster is absent; its Kubernetes resources are already removed.'
+fi
+if [[ "${primary_cluster_present}" == "true" ]]; then
+  KUBECONFIG="${dns_primary}" kubectl delete namespace assessment observability \
+    --ignore-not-found --wait=true --timeout=10m
+  KUBECONFIG="${dns_primary}" kubectl delete \
+    clusterrole/assessment-deployer-gateway-impersonation \
+    clusterrolebinding/assessment-deployer-gateway-impersonation \
+    --ignore-not-found --wait=true --timeout=5m
+fi
 
 terraform_destroy_stage() {
   local stage="$1"
@@ -658,6 +841,8 @@ install -m 0600 /dev/null "${report_file}"
   printf 'retained_wif_provider=%s\n' "${GCP_WIF_PROVIDER}"
   printf 'retained_deployer_identity=%s\n' "${GCP_DEPLOYER_SERVICE_ACCOUNT}"
   printf '%s\n' 'retained_bootstrap_state=bootstrap'
+  printf '%s\n' 'controller_recovery_inventory=retained-through-successful-report'
 } | tee "${report_file}"
-rm -f -- "${INVENTORY_FILE}"
+remove_recovery_inventories
+printf '%s\n' 'controller_recovery_inventory=removed-after-successful-teardown' | tee -a "${report_file}"
 printf '%s\n' 'Teardown completed. Bootstrap state, WIF, deployer identity, and state bucket were intentionally retained.'

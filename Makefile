@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 PATH := $(CURDIR)/.tools/bin:$(PATH)
 
-.PHONY: tools tool-versions bootstrap fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana security-scan validate
+.PHONY: tools tool-versions bootstrap configure-github-variables render-manifests deploy-foundation deploy-platform deploy-workloads verify-smoke verify-hpa verify-failover teardown fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana security-scan validate
 
 tools:
 	./scripts/install-tools.sh
@@ -21,6 +21,37 @@ bootstrap:
 	./scripts/bootstrap.sh --project-id "$(PROJECT_ID)" --state-bucket "$(STATE_BUCKET)" \
 	  --github-repository "$(GITHUB_REPOSITORY)" --github-owner-id "$(GITHUB_OWNER_ID)" \
 	  --github-repository-id "$(GITHUB_REPOSITORY_ID)"
+
+configure-github-variables:
+	./scripts/configure-github-variables.sh --repository "$(GITHUB_REPOSITORY)" --outputs "$(OUTPUTS_FILE)"
+
+render-manifests:
+	./scripts/render-manifests.sh --project-id "$(GCP_PROJECT_ID)" --project-number "$(GCP_PROJECT_NUMBER)" \
+	  --deployer-email "$(GCP_DEPLOYER_SERVICE_ACCOUNT)" --app-a-gsa-email "$(APP_A_GSA_EMAIL)" \
+	  --grafana-gsa-email "$(GRAFANA_GSA_EMAIL)" --global-ipv4-address "$(GLOBAL_IPV4_ADDRESS)" \
+	  --cloud-armor-policy-name "$(CLOUD_ARMOR_POLICY_NAME)" --bigquery-dataset "$(BIGQUERY_DATASET)" \
+	  --tls-certificate-name "$(TLS_CERTIFICATE_NAME)"
+
+deploy-foundation:
+	./scripts/deploy.sh foundation
+
+deploy-platform:
+	./scripts/deploy.sh platform
+
+deploy-workloads:
+	./scripts/deploy.sh workloads
+
+verify-smoke:
+	./scripts/verify.sh smoke
+
+verify-hpa:
+	./scripts/verify.sh hpa --region "$(REGION)" --confirm "$(CONFIRMATION)"
+
+verify-failover:
+	./scripts/verify.sh failover --region "$(REGION)" --confirm "$(CONFIRMATION)"
+
+teardown:
+	./scripts/teardown.sh --project-id "$(PROJECT_ID)" --confirmation "$(CONFIRMATION)"
 
 fmt:
 	terraform fmt -check -recursive infra

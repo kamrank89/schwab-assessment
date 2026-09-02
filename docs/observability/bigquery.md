@@ -14,11 +14,11 @@ Terraform creates `assessment_logs` in the `US` multi-region with partition expi
 | `load-balancer-error-rate.sql` | Per-minute 5xx rate |
 | `traffic-analysis.sql` | Status counts and p50/p95/p99 latency |
 
-Cloud Logging normalizes log IDs into table names, and tables appear only after matching log entries are routed. The schema discovery query is the authoritative first step if table names or payload shape differ.
+Cloud Logging normalizes log IDs into table names, and tables appear only after matching log entries are routed. Smoke requires exact tables `stdout`, `requests`, `kubelet`, and `kube_apiserver`. Its bounded readiness loop executes the rendered metadata-only schema discovery query until those tables expose the top-level fields used by the committed SQL: `timestamp` (`TIMESTAMP`); `severity`/`textPayload` (`STRING`) where referenced; and `resource`, `httpRequest`, or `jsonPayload` (`STRUCT`) where referenced. A different name or incompatible type is a deployment-specific incompatibility and times out before dry runs; repository development does not claim the live schema.
 
 ## Bounded execution
 
-Smoke verification replaces only `${GCP_PROJECT_ID}` and `${BIGQUERY_DATASET}`. Six data queries receive UTC `start_time` and `end_time` parameters; schema discovery receives none. Every query gets a `bq query --dry_run --use_legacy_sql=false` before it can be cited as valid in that deployment.
+Smoke verification replaces only `${GCP_PROJECT_ID}` and `${BIGQUERY_DATASET}`. It captures schema-discovery rows in memory for compatibility evaluation and never writes them or log rows to the report/artifact. After compatibility succeeds, six data queries receive UTC `start_time` and `end_time` parameters; schema discovery receives none. Only then does every query get a `bq query --dry_run --use_legacy_sql=false` before it can be cited as valid in that deployment.
 
 A direct future dry run follows the same form:
 

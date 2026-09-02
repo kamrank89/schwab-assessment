@@ -9,6 +9,7 @@ Dispatch only HPA:
 ```bash
 # CLOUD/KUBERNETES MUTATION and temporary cost: raises both apps to four replicas in us-central1.
 gh workflow run deploy.yml --ref main \
+  -f https_to_http_transition=false \
   -f run_hpa_drill=true \
   -f run_failover_drill=false
 ```
@@ -28,6 +29,7 @@ Dispatch only failover:
 ```bash
 # CLOUD/KUBERNETES MUTATION: temporarily deletes both app Deployments in us-east1.
 gh workflow run deploy.yml --ref main \
+  -f https_to_http_transition=false \
   -f run_hpa_drill=false \
   -f run_failover_drill=true
 ```

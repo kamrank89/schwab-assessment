@@ -39,6 +39,7 @@ No Google Cloud deployment has been run from this repository. Account-free check
 
    ```bash
    gh workflow run deploy.yml --ref main \
+     -f https_to_http_transition=false \
      -f run_hpa_drill=false \
      -f run_failover_drill=false
    ```

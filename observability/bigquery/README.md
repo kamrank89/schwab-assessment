@@ -23,12 +23,15 @@ The templates use these likely table names:
 | Kubernetes API server | `kube_apiserver` | `resource.type = 'k8s_control_plane_component'` and `component_name = 'apiserver'` |
 | External Application Load Balancer requests | `requests` | `resource.type = 'http_load_balancer'` |
 
-These names are expectations, not a deployed schema contract. Tables do not
+These names are the exact contract consumed by the committed queries. Tables do not
 exist until the first matching record arrives. Other routed log names create
 other tables, such as `stderr`, `events`, `container_runtime`,
 `node_problem_detector`, `kube_scheduler`, and `kube_controller_manager`.
-Run `queries/schema-discovery.sql` after deployment and ingestion, then adjust a
-template's table suffix or payload fields to match the discovered table.
+Smoke runs `queries/schema-discovery.sql` after deployment and ingestion. If an
+exact required table or compatible top-level column is absent, the bounded gate
+times out before dry-running any query. Reconcile a deployment-specific mismatch
+through a reviewed query/sink change; do not edit a template ad hoc inside the
+protected run.
 
 The first record routed to a new table determines its initial schema. Later
 records can add fields within BigQuery limits, but a field-type change or a new
@@ -68,14 +71,17 @@ deployment commands. After the protected workflow has authenticated with OIDC,
 deployed the infrastructure and workloads, and received at least one record for
 each source, it must:
 
-1. Run `schema-discovery.sql` and record the discovered table and column names.
-2. Reconcile the likely table names and payload fields in each data template
-   with that deployed schema.
+1. Repeatedly execute rendered `schema-discovery.sql` as metadata-only Standard
+   SQL until `stdout`, `requests`, `kubelet`, and `kube_apiserver` have the
+   compatible top-level columns used by the committed queries.
+2. Keep the returned schema payload out of reports and artifacts; record only
+   the compatibility result.
 3. Substitute the concrete project and dataset IDs.
 4. Dry-run every query with Standard SQL and concrete time parameters before
    permitting any execution.
 
-The protected workflow can use the following dry-run loop after those gates:
+`scripts/verify.sh smoke` implements the readiness loop and the following
+dry-run shape after the gate:
 
 ```bash
 for query_file in observability/bigquery/queries/*.sql; do

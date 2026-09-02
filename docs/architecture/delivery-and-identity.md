@@ -9,15 +9,18 @@ flowchart LR
   static --> oidc[GitHub OIDC token]
   oidc --> wif[GCP WIF provider\nrepo IDs + exact subject]
   wif --> deployer[assessment-deployer]
-  deployer --> foundation[Foundation plan/apply]
+  deployer --> mode{Transition input?}
+  mode -->|false| foundation[Foundation plan/apply]
   foundation --> platform[Platform plan/apply]
   platform --> workloads[Kustomize workloads + MCI/MCS]
   workloads --> smoke[Smoke + BQ dry runs]
   smoke -. optional .-> hpa[HPA exercise]
   hpa -. optional .-> failover[Application failover exercise]
+  mode -->|true| detach[HTTP MCI apply + certificate-reference proof]
+  detach --> second[Second ordinary dispatch required]
 ```
 
-`.github/workflows/validate.yml` has only `contents: read`, never requests an OIDC token, and runs `make tools` plus `make validate`. Deployment and teardown are manual-dispatch-only, reject refs other than `main`, serialize with the non-cancelling `assessment-production` concurrency group, and install Google Cloud CLI 582.0.0 with `gke-gcloud-auth-plugin` and `bq` after federation.
+`.github/workflows/validate.yml` has only `contents: read`, never requests an OIDC token, and runs `make tools` plus `make validate`. Deployment and teardown are manual-dispatch-only, reject refs other than `main`, serialize with the non-cancelling `assessment-production` concurrency group, and install Google Cloud CLI 582.0.0 with required components after federation. The deploy workflow's default-disabled `https_to_http_transition` input selects a narrow first dispatch that skips foundation/platform mutation and rejects drills; a later ordinary dispatch performs the HTTP Terraform convergence.
 
 ## Identity chain
 

@@ -40,9 +40,9 @@ For the HTTP baseline, smoke verification calls both paths at the reserved IP an
 
 GKE collects system, workload, API server, scheduler, and controller-manager logs and enables system/control-plane monitoring plus Managed Service for Prometheus. The project log sink routes Kubernetes, GKE control-plane, node, container, and HTTP load-balancer logs into the `assessment_logs` BigQuery dataset using partitioned tables. Dataset partitions expire after 30 days.
 
-Committed SQL uses bounded `timestamp BETWEEN @start_time AND @end_time` predicates for six data queries against the partitioned log tables; the schema-discovery query is metadata-only. Smoke verification dry-runs all seven queries after authentication and waits for routed tables to exist. A dry run proves SQL validity and estimates processing, not that useful rows exist; actual redacted query results remain live evidence.
+Committed SQL uses bounded `timestamp BETWEEN @start_time AND @end_time` predicates for six data queries against the partitioned log tables; the schema-discovery query is metadata-only. Smoke repeatedly executes only the rendered schema query until exact `stdout`, `requests`, `kubelet`, and `kube_apiserver` tables have compatible required top-level columns. It keeps schema payloads out of artifacts, then dry-runs all seven queries. A dry run proves SQL validity and estimates processing, not that useful rows exist; actual redacted query results remain live evidence.
 
-Grafana is a single recoverable Deployment in `us-central1` with ephemeral local data. Datasources and three dashboard exports are provisioned from ConfigMaps. The `Assessment overview` export contains the four required panels:
+Grafana is a single recoverable Deployment in `us-central1` with ephemeral local data. Datasources and three dashboard exports are provisioned from generated ConfigMaps. Smoke follows the current Deployment's dashboard-volume reference and ignores stale hash-suffixed maps. The `Assessment overview` export contains the four required panels:
 
 1. Application error rate
 2. Pod restarts

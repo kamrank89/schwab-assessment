@@ -1,6 +1,6 @@
 # Evidence status
 
-Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` worktree. No Google Cloud authentication, Terraform plan/apply/destroy, lifecycle script, `gcloud`, `bq`, `gh`, deployment, drill, or teardown command was run for this documentation task.
+Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` worktree. No Google Cloud authentication, Terraform plan/apply/destroy/state operation, lifecycle script, `gcloud`, `bq`, `kubectl`, `gh`, workflow dispatch, deployment, drill, or teardown command was run for this final integration fix wave.
 
 ## Status vocabulary
 
@@ -15,8 +15,10 @@ Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` 
 | Scope | Command | Result | Status |
 | --- | --- | --- | --- |
 | Full repository validation | `make validate` | Exit 0. Terraform formatting and all three `init -backend=false` validations succeeded; Kubernetes summaries had zero invalid/errors; Bash/ShellCheck, actionlint, and Grafana JSON parsing succeeded. GKE-specific schemas were skipped where unavailable. | `verified-account-free` |
+| Final integration focused checks | `bash -n` and `shellcheck` for `deploy.sh`, `teardown.sh`, and `verify.sh`; `actionlint` for `deploy.yml`; focused Kustomize/Kubeconform renders | Exit 0. All four changed control flows passed syntax/static workflow analysis; the primary workload and HTTP/TLS/HTTPS config overlays rendered with zero invalid resources or errors. This does not exercise a cloud lifecycle path. | `verified-account-free` |
 | Focused immutable-subject regression checks | `terraform fmt -check -recursive infra`; bootstrap `init -backend=false` and `validate`; `bash -n scripts/bootstrap.sh`; `shellcheck scripts/bootstrap.sh` | Exit 0 after standard formatting; bootstrap Terraform and recovery-script syntax/static analysis succeeded. This does not mint or inspect a GitHub token. | `verified-account-free` |
 | Requirements preservation | `git show eb21425a79a0b03a763d0c90571eea1cf11c9df3:docs/requirments.md \| cmp - docs/requirements/assessment-source.md` | Exit 0; the renamed file is byte-for-byte equal to the supplied source at the pre-documentation base commit. | `verified-account-free` |
+| Relative documentation targets | shell/Perl scan of tracked Markdown inline links | Exit 0; no missing local targets. | `verified-account-free` |
 | Whitespace | `git diff --check` | Exit 0; no output. | `verified-account-free` |
 | Sensitive generated artifact search | `find . -type f \( -name '*.tfplan' -o -name '*.tfstate' -o -name '*.pem' -o -name '*service-account*.json' -o -name 'kubeconfig*' \) -not -path './.git/*' -print` | Exit 0; no output. | `verified-account-free` |
 | Grafana export alternative | `make validate` (`validate-grafana`) plus committed JSON inventory | Three dashboard JSON exports parse, including the four named overview panels. This is an export artifact, not a live screenshot or datasource result. | `verified-account-free` |
@@ -36,13 +38,14 @@ The command output existed only in the local task session; no fabricated evidenc
 | Optional DNS, active certificate, HTTP redirect, and HTTPS 2xx | `deployment-evidence-pending` | DNS/TLS record; `not-applicable` only within a completed HTTP-only deployment record |
 | Cloud Armor attachment and runtime policy behavior | `deployment-evidence-pending` | Security/backend record |
 | Workload Identity and Secret Manager runtime mounts | `deployment-evidence-pending` | Redacted IAM/secret record |
-| BigQuery routed tables, SQL dry runs, and bounded query results | `deployment-evidence-pending` | BigQuery record |
-| Grafana Pod and provisioned configuration | `deployment-evidence-pending` | Smoke record; committed export is static only |
+| BigQuery exact routed-table/schema readiness, SQL dry runs, and bounded query results | `deployment-evidence-pending` | BigQuery record |
+| Grafana Pod and current Deployment-referenced dashboard ConfigMap | `deployment-evidence-pending` | Smoke record; committed export is static only |
 | Grafana datasource results or populated live panels | `deployment-evidence-pending` | Separately approved temporary-access evidence; baseline smoke does not test them |
 | Planned readiness-probe troubleshooting exercise | `deployment-evidence-pending` | Troubleshooting record |
 | Optional HPA reconciliation exercise, configuration reapplication, and exact restoration | `deployment-evidence-pending` | HPA drill record plus a subsequent smoke record for exact three-replica restoration; `not-applicable` only when omitted from a completed run |
 | Optional application failover exercise, configuration reapplication, and exact restoration | `deployment-evidence-pending` | Failover drill record plus a subsequent smoke record for exact three-replica restoration; `not-applicable` only when omitted from a completed run |
 | Guarded teardown, controller cleanup, and residual resources | `deployment-evidence-pending` | Teardown/residual record |
+| Guarded two-dispatch HTTPS-to-HTTP transition and certificate-reference proof | `deployment-evidence-pending` | Two linked delivery/DNS-TLS records |
 | Redeploy from retained bootstrap/state | `deployment-evidence-pending` | New deployment and smoke records |
 | Actual cost and post-teardown dormant spend | `deployment-evidence-pending` | Billing/cost record |
 

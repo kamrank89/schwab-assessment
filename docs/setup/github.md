@@ -22,6 +22,8 @@
 
 These are identifiers and feature flags, not credentials. Never replace WIF with a JSON service-account key or a GitHub cloud-key secret.
 
+`deploy.yml` also has three dispatch-time booleans, all default-disabled: `https_to_http_transition`, `run_hpa_drill`, and `run_failover_drill`. The transition input is only the first half of an HTTPS-to-HTTP change, skips foundation/platform Terraform mutation, and rejects either drill; follow [DNS/TLS](dns-tls.md) before selecting it.
+
 ## Recommended production governance checklist
 
 These controls are manual recommendations, not prerequisites automated by this repository and not claims about the current repository settings.

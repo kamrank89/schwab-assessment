@@ -14,6 +14,7 @@ After the revert passes the required `validate` check and merges to protected `m
 ```bash
 # CLOUD MUTATION and cost: converges Terraform and Kubernetes to the reverted source.
 gh workflow run deploy.yml --ref main \
+  -f https_to_http_transition=false \
   -f run_hpa_drill=false \
   -f run_failover_drill=false
 ```

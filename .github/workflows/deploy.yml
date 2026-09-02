@@ -3,6 +3,11 @@ name: deploy
 on:
   workflow_dispatch:
     inputs:
+      https_to_http_transition:
+        description: "First of two dispatches: detach the managed certificate from MCI before an ordinary HTTP deploy."
+        required: false
+        default: false
+        type: boolean
       run_hpa_drill:
         description: Run the controlled HPA exercise in us-central1 after smoke verification.
         required: false
@@ -25,6 +30,11 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
+      - name: Reject transition combined with a drill
+        if: inputs.https_to_http_transition && (inputs.run_hpa_drill || inputs.run_failover_drill)
+        run: |
+          echo "https_to_http_transition cannot be combined with HPA or failover drills." >&2
+          exit 1
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -35,8 +45,52 @@ jobs:
       - name: Run account-free validation
         run: make validate
 
+  prepare-https-to-http:
+    if: github.ref == 'refs/heads/main' && inputs.https_to_http_transition
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    env:
+      CLOUDSDK_CORE_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      GCP_REGION_PRIMARY: ${{ vars.GCP_REGION_PRIMARY }}
+      GCP_REGION_SECONDARY: ${{ vars.GCP_REGION_SECONDARY }}
+      GCP_ENABLE_HTTPS: ${{ vars.GCP_ENABLE_HTTPS }}
+      GCP_MANAGE_DNS: ${{ vars.GCP_MANAGE_DNS }}
+      GCP_CREATE_DNS_ZONE: ${{ vars.GCP_CREATE_DNS_ZONE }}
+      GCP_DNS_NAME: ${{ vars.GCP_DNS_NAME }}
+      GCP_DNS_ZONE_NAME: ${{ vars.GCP_DNS_ZONE_NAME }}
+      GCP_DNS_ZONE_DNS_NAME: ${{ vars.GCP_DNS_ZONE_DNS_NAME }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          audience: https://iam.googleapis.com/${{ vars.GCP_WIF_PROVIDER }}
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 582.0.0
+          install_components: gke-gcloud-auth-plugin
+      - name: Install pinned deployment tools
+        run: make tools
+      - name: Detach HTTPS before HTTP Terraform mutation
+        run: ./scripts/deploy.sh https-to-http
+
   deploy-foundation:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && !inputs.https_to_http_transition
     needs: validate
     permissions:
       contents: read

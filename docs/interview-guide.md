@@ -6,7 +6,7 @@
 
 “A global reserved IP feeds MCI/MCS, which routes `/app-a` and `/app-b` to healthy Pods in both regions and attaches Cloud Armor. HTTP by IP is the safe first verification path; owned DNS and a managed certificate are optional. Logs flow through Cloud Logging into partitioned BigQuery tables, and committed Grafana exports include the four required overview panels.
 
-“Validation is account-free. Deployment and teardown are manual `main` workflows using short-lived OIDC/WIF credentials. Teardown inventories controller-owned load-balancer resources, deletes in reverse order, and intentionally retains bootstrap/WIF/state so redeploy is simple. I do not claim live results: endpoints, failover, dashboards, queries, IAM, and teardown remain evidence-pending until an authorized, redacted run.”
+“Validation is account-free. Deployment and teardown are manual `main` workflows using short-lived OIDC/WIF credentials. HTTPS downgrades use a first dispatch that returns MCI to HTTP and proves the certificate is detached, then an ordinary dispatch may delete certificate/DNS resources. Teardown inventories controller-owned load-balancer resources, deletes in reverse order, and intentionally retains bootstrap/WIF/state so redeploy is simple; it also supports a provably never-created platform after a foundation-only partial deploy. I do not claim live results: endpoints, failover, dashboards, queries, IAM, and teardown remain evidence-pending until an authorized, redacted run.”
 
 ## Shortest operator story
 
@@ -14,7 +14,7 @@
 make tools && make validate
   -> human ADC bootstrap once
   -> configure 13 non-secret GitHub variables
-  -> manual deploy.yml from main, drills false
+  -> manual deploy.yml from main, transition/drills false
   -> automatic smoke + evidence collection
   -> guarded teardown.yml with DESTROY <project>
   -> retained bootstrap/state/WIF
@@ -39,6 +39,8 @@ It makes one-time assessment bootstrap and manual lifecycle reproducible without
 
 It verifies the global IP and both routes without requiring ownership/delegation of a domain. Managed TLS cannot be honestly verified until public DNS points an owned hostname at the load balancer. HTTP is an assessment baseline, not the production security endpoint.
 
+Returning from HTTPS is deliberately two-dispatch: the guarded first run makes only the HTTP MCI/controller change and proves no target HTTPS or SSL proxy references the managed certificate; the second ordinary run may then remove Terraform certificate/DNS resources. This sequencing avoids asking Google to delete a still-referenced certificate.
+
 ### Why digest-pinned public images?
 
 The assessment evaluates platform architecture, not a custom application build. Digest pins make bytes reproducible, while the limitations explicitly state they do not prove provenance, vulnerabilities, Trace, Profiler, or rich error telemetry.
@@ -53,8 +55,8 @@ Destroying the identity and state anchor in the same path that needs them is fra
 - **What proves six replicas?** A future smoke report showing three desired/Ready/updated/available App A and App B replicas in each of two regions.
 - **Is failover tested?** No. The repository has a bounded application-backend exercise with restoration traps; it remains pending until deliberately run.
 - **Is Grafana working?** Three JSON exports parse and are committed; live Pod/datasource/panel health is pending.
-- **Are the BigQuery queries proven?** Their source is reviewed; future smoke dry-runs all seven against the live schema. Useful rows and results are still live evidence.
-- **Did teardown leave nothing?** No teardown has run, and normal teardown intentionally retains bootstrap state/WIF/deployer. A residual record must distinguish deleted assessment resources from retained anchors.
+- **Are the BigQuery queries proven?** Their source is reviewed; future smoke first waits for the four exact routed tables and compatible top-level schema, then dry-runs all seven. Useful rows and results are still live evidence.
+- **Did teardown leave nothing?** No teardown has run, and normal teardown intentionally retains bootstrap state/WIF/deployer. A residual record must distinguish destroyed, already-empty, and skipped stages from retained anchors. Historical-only state is a recovery stop, not proof that a stage never existed.
 
 ## Likely follow-up improvements
 

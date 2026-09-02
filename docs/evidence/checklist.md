@@ -35,6 +35,7 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 - [ ] HTTP `/app-a` and `/app-b` status codes recorded without bodies
 - [ ] if HTTPS enabled: owned DNS, HTTP 3xx, certificate `ACTIVE`, and HTTPS 2xx for both paths
 - [ ] if HTTPS disabled: mark the HTTPS row `not-applicable`; do not claim TLS
+- [ ] if returning from HTTPS to HTTP: first-dispatch URL proves HTTP MCI reconciliation and both routes 2xx, both TLS/frontend annotations absent, and zero target HTTPS/SSL proxy references; second ordinary-dispatch URL proves certificate/DNS convergence and HTTP 2xx
 
 ## Workload identity and secrets
 
@@ -44,11 +45,11 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 
 ## BigQuery and Grafana
 
-- [ ] routed BigQuery tables present
+- [ ] exact routed BigQuery tables `stdout`, `requests`, `kubelet`, and `kube_apiserver` passed the bounded top-level schema-compatibility gate
 - [ ] all seven committed SQL files complete a live dry run
-- [ ] any actual query uses a bounded UTC/partition window; output is minimized and redacted
+- [ ] any actual query uses a bounded UTC/partition window; output is minimized and redacted; schema-discovery payloads and log rows are not uploaded
 - [ ] Grafana Deployment has one Ready/available primary-cluster replica
-- [ ] exactly three dashboard exports provisioned
+- [ ] the exact dashboard ConfigMap referenced by the current Grafana Deployment contains exactly the three expected JSON exports; stale hash-suffixed maps are excluded
 - [ ] dashboard artifact is the committed JSON export; a redacted live screenshot is optional and requires a separately approved temporary human IAM/RBAC access record outside the baseline
 - [ ] screenshot/export shows the four overview panels: error rate, restarts, p50/p95/p99 latency, CPU/memory
 
@@ -71,8 +72,8 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 
 - [ ] separate `teardown.yml` workflow URL, UTC time, commit, actor, and reviewer
 - [ ] MCI controller inventory was captured before deletion and removed only after success
-- [ ] workloads/MCI/MCS deleted before platform, then foundation
-- [ ] redacted report states deleted resource classes
+- [ ] normal path: workloads/MCI/MCS deleted before platform, then foundation; foundation-only path: live foundation state, never-created platform proof, and skipped cleanup/stage are recorded
+- [ ] redacted report states each cleanup/stage result without presenting skipped or already-empty stages as deleted
 - [ ] residual check records the intentionally retained project, state bucket/state prefixes and versions, WIF provider, deployer identity/IAM, and bootstrap APIs
 - [ ] billing report checked after provider lag; no literal $0 guarantee
 - [ ] external DNS/delegation cleanup recorded when applicable

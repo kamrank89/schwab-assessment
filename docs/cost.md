@@ -56,6 +56,6 @@ This excludes every item below, including Autopilot Pod compute and load balanci
 
 ## After teardown
 
-Teardown removes MCI/controller load-balancer resources, namespaces, clusters, NAT, address, Armor, BigQuery dataset/sink, secrets, optional DNS/certificate, and other platform/foundation resources. It intentionally retains the project, WIF pool/provider, deployer identity/IAM, enabled bootstrap APIs, versioned state bucket, and bootstrap/foundation/platform state objects.
+Normal teardown removes MCI/controller load-balancer resources, namespaces, clusters, NAT, address, Armor, BigQuery dataset/sink, secrets, optional DNS/certificate, and other platform/foundation resources. The foundation-only recovery path skips never-created platform/controller classes. Teardown intentionally retains the project, WIF pool/provider, deployer identity/IAM, enabled bootstrap APIs, versioned state bucket, and any bootstrap/foundation/platform state objects and versions that were created.
 
 Those retained control-plane identities do not run workloads. A few small state objects normally make dormant spend effectively zero at ordinary billing precision, but Cloud Storage bytes/versions/operations and future price changes mean literal $0 cannot be promised. Verify the post-teardown billing/residual report. Full bootstrap decommission is a separate reviewed operation not automated here.

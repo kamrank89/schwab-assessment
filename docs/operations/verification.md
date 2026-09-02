@@ -29,10 +29,10 @@ Smoke checks:
 - App A and App B each have exactly three desired/Ready/updated/available replicas in each region and successful rollouts;
 - the MCI VIP equals Terraform's reserved address, exactly two MCS objects exist, both BackendConfigs reference the Cloud Armor policy, and every reported backend status is `HEALTHY`;
 - HTTP/IP 2xx for both routes, or HTTP 3xx plus `ACTIVE` certificate and HTTPS 2xx when enabled;
-- the BigQuery dataset has routed tables and all seven SQL files pass a Standard SQL dry run, with one-hour bounded parameters for data queries; and
-- Grafana is one Ready replica with exactly three provisioned dashboard exports.
+- the metadata-only BigQuery readiness loop finds exact `stdout`, `requests`, `kubelet`, and `kube_apiserver` tables with compatible required top-level columns before all seven SQL files pass a Standard SQL dry run, with one-hour bounded parameters for data queries; and
+- Grafana is one Ready replica whose current Deployment-referenced dashboard ConfigMap has exactly the three expected JSON exports.
 
-The script writes a mode-0600 redacted report under `artifacts/live/smoke-<UTC>.txt`; GitHub retains the uploaded report for seven days. It deliberately omits response bodies, query rows, tokens, secrets, state, plans, and kubeconfigs. A workflow log/report is supporting evidence, not a substitute for the complete metadata required by [live-evidence-template.md](../evidence/live-evidence-template.md).
+The script writes a mode-0600 redacted report under `artifacts/live/smoke-<UTC>.txt`; GitHub retains the uploaded report for seven days. It deliberately omits response bodies, query rows, schema-discovery payloads, tokens, secrets, state, plans, and kubeconfigs. A workflow log/report is supporting evidence, not a substitute for the complete metadata required by [live-evidence-template.md](../evidence/live-evidence-template.md).
 
 ## Endpoint spot checks
 
@@ -51,7 +51,7 @@ For HTTPS, use the owned hostname and expect HTTP 3xx then HTTPS 2xx. Record UTC
 
 The committed baseline does not promise interactive human access to the cluster-internal Grafana service. It grants the workflow identity the Connect Gateway and Kubernetes authorization needed for automated delivery and smoke checks, but it does not grant a documented human principal the corresponding IAM-plus-RBAC path for `kubectl port-forward`. Do not impersonate the pipeline identity or infer human access from its permissions.
 
-Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and exactly three dashboard JSON files are provisioned. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login. A live UI screenshot requires a separately approved, temporary human access design outside this baseline, including explicit identity, least-privilege IAM/RBAC, Secret Manager access, expiry, audit ownership, and redaction. Until that path is approved and exercised, do not publish a port-forward command or claim a screenshot.
+Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and the exact hash-suffixed ConfigMap named by its current `dashboards` volume contains the three expected dashboard JSON keys. It deliberately ignores stale generated maps left by earlier applies. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login. A live UI screenshot requires a separately approved, temporary human access design outside this baseline, including explicit identity, least-privilege IAM/RBAC, Secret Manager access, expiry, audit ownership, and redaction. Until that path is approved and exercised, do not publish a port-forward command or claim a screenshot.
 
 ## Optional exercises
 

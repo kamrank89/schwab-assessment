@@ -7,7 +7,7 @@ Copy this template for each authorized deployment, optional exercise, teardown, 
 | Field | Required value |
 | --- | --- |
 | Evidence ID | Stable identifier, for example `20260902T120000Z-smoke` |
-| Scope | One bounded claim: cluster/Fleet, replicas, routing, BigQuery, Grafana, drill, teardown, or residuals |
+| Scope | One bounded claim: cluster/Fleet, replicas, routing, BigQuery, Grafana, HTTPS-to-HTTP transition, drill, teardown, or residuals |
 | Status | `verified-live` only after review; otherwise `deployment-evidence-pending` |
 | Start time UTC | RFC 3339 seconds |
 | End time UTC | RFC 3339 seconds |
@@ -36,7 +36,7 @@ Actual redacted result:
 Interpretation limited to:
 ```
 
-Do not paste secret values, tokens, kubeconfigs, Terraform state or plan content, HTTP bodies, raw BigQuery rows, full logs, user IPs, or unrelated project inventory. Prefer counts, resource names already public in code, status classes, UTC windows, and pass/fail summaries.
+Do not paste secret values, tokens, kubeconfigs, Terraform state or plan content, HTTP bodies, raw BigQuery rows or schema-discovery payloads, full logs, user IPs, or unrelated project inventory. Prefer counts, resource names already public in code, status classes, UTC windows, and pass/fail summaries.
 
 ## Artifact inventory
 

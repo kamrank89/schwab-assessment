@@ -12,6 +12,7 @@ PRIMARY_CLUSTER="gke-assessment-us-central1"
 SECONDARY_CLUSTER="gke-assessment-us-east1"
 ROLLOUT_TIMEOUT="10m"
 DRILL_TIMEOUT_SECONDS=600
+BIGQUERY_READINESS_TIMEOUT_SECONDS=600
 
 usage() {
   cat <<'USAGE'
@@ -259,28 +260,69 @@ verify_backend_health() {
 }
 
 verify_bigquery() {
-  local tables_json
-  local table_count
-  local deadline=$((SECONDS + DRILL_TIMEOUT_SECONDS))
+  local schema_file="${REPO_ROOT}/observability/bigquery/queries/schema-discovery.sql"
+  local schema_query
+  local schema_json
+  local schema_ready="false"
+  local deadline=$((SECONDS + BIGQUERY_READINESS_TIMEOUT_SECONDS))
   local query_file
   local query_text
   local -a query_parameters
   local query_count=0
 
-  tables_json='[]'
-  table_count=0
+  schema_query="$(sed -e "s|\${GCP_PROJECT_ID}|${GCP_PROJECT_ID}|g" \
+    -e "s|\${BIGQUERY_DATASET}|${bigquery_dataset}|g" "${schema_file}")"
+  schema_json='[]'
   while ((SECONDS < deadline)); do
-    if tables_json="$(bq ls --project_id="${GCP_PROJECT_ID}" --format=json \
-      "${GCP_PROJECT_ID}:${bigquery_dataset}" 2>/dev/null)"; then
-      table_count="$(jq -er 'length' <<<"${tables_json}")"
-      if ((table_count > 0)); then
-        break
-      fi
+    if ! schema_json="$(bq query --project_id="${GCP_PROJECT_ID}" --quiet \
+      --format=json --use_legacy_sql=false "${schema_query}" 2>/dev/null)"; then
+      die "Could not execute BigQuery metadata schema discovery during readiness."
+    fi
+    jq -e '
+      type == "array" and
+      all(.[];
+        type == "object" and
+        (.table_name | type) == "string" and
+        (.column_name | type) == "string" and
+        (.data_type | type) == "string"
+      )
+    ' <<<"${schema_json}" >/dev/null ||
+      die "BigQuery schema discovery returned malformed metadata."
+    if jq -e '
+      def has_column($table; $column; $kind):
+        any(.[];
+          .table_name == $table and
+          .column_name == $column and
+          (if $kind == "STRUCT" then
+             (.data_type | startswith("STRUCT<"))
+           else
+             .data_type == $kind
+           end)
+        );
+      has_column("stdout"; "timestamp"; "TIMESTAMP") and
+      has_column("stdout"; "severity"; "STRING") and
+      has_column("stdout"; "resource"; "STRUCT") and
+      has_column("stdout"; "textPayload"; "STRING") and
+      has_column("requests"; "timestamp"; "TIMESTAMP") and
+      has_column("requests"; "resource"; "STRUCT") and
+      has_column("requests"; "httpRequest"; "STRUCT") and
+      has_column("kubelet"; "timestamp"; "TIMESTAMP") and
+      has_column("kubelet"; "severity"; "STRING") and
+      has_column("kubelet"; "resource"; "STRUCT") and
+      has_column("kubelet"; "jsonPayload"; "STRUCT") and
+      has_column("kube_apiserver"; "timestamp"; "TIMESTAMP") and
+      has_column("kube_apiserver"; "severity"; "STRING") and
+      has_column("kube_apiserver"; "resource"; "STRUCT") and
+      has_column("kube_apiserver"; "jsonPayload"; "STRUCT")
+    ' <<<"${schema_json}" >/dev/null; then
+      schema_ready="true"
+      break
     fi
     sleep 15
   done
-  ((table_count > 0)) || die "BigQuery log dataset is available but has no routed log tables."
-  record "bigquery_dataset=${bigquery_dataset} availability=available table_count=${table_count}"
+  [[ "${schema_ready}" == "true" ]] ||
+    die "BigQuery schema readiness timed out: exact tables stdout, requests, kubelet, and kube_apiserver with the committed queries' required top-level TIMESTAMP, STRING, and STRUCT columns were not all compatible."
+  record "bigquery_dataset=${bigquery_dataset} required_tables=stdout,requests,kubelet,kube_apiserver schema=compatible"
 
   VERIFY_END_TIME="${VERIFY_END_TIME:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}"
   VERIFY_START_TIME="${VERIFY_START_TIME:-$(date -u -d '1 hour ago' +'%Y-%m-%dT%H:%M:%SZ')}"
@@ -307,19 +349,35 @@ verify_bigquery() {
 
 verify_grafana() {
   local deployment_json
-  local configmaps_json
-  local dashboard_count
+  local dashboard_configmap
+  local dashboard_configmap_json
 
   deployment_json="$(KUBECONFIG="${gateway_primary}" kubectl -n observability get \
     deployment/grafana -o json)"
   jq -e '.spec.replicas == 1 and .status.readyReplicas == 1 and .status.availableReplicas == 1' \
     <<<"${deployment_json}" >/dev/null || die "Grafana health-probe-gated deployment is not Ready."
-  configmaps_json="$(KUBECONFIG="${gateway_primary}" kubectl -n observability get configmaps -o json)"
-  dashboard_count="$(jq -er '[.items[] |
-    select(.metadata.name | startswith("grafana-dashboards-")) |
-    .data | keys[] | select(endswith(".json"))] | length' <<<"${configmaps_json}")"
-  [[ "${dashboard_count}" == "3" ]] || die "Grafana does not have exactly three provisioned dashboard JSON files."
-  record "grafana health=ready dashboard_provisioning=configured dashboard_count=3"
+  dashboard_configmap="$(jq -er '
+    [.spec.template.spec.volumes[]? |
+      select(.name == "dashboards") |
+      .configMap.name |
+      select(type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"))] |
+    if length == 1 then .[0] else error("expected one dashboard ConfigMap reference") end
+  ' <<<"${deployment_json}")" ||
+    die "Grafana Deployment does not reference exactly one valid dashboards ConfigMap."
+  dashboard_configmap_json="$(KUBECONFIG="${gateway_primary}" kubectl -n observability get \
+    "configmap/${dashboard_configmap}" -o json)"
+  jq -e --arg name "${dashboard_configmap}" '
+    .metadata.namespace == "observability" and
+    .metadata.name == $name and
+    (.data | type) == "object" and
+    ((.data | keys | sort) == [
+      "assessment-overview.json",
+      "multicluster-operations.json",
+      "traffic-log-analysis.json"
+    ])
+  ' <<<"${dashboard_configmap_json}" >/dev/null ||
+    die "The Grafana Deployment-referenced ConfigMap does not contain exactly the three expected dashboard JSON keys."
+  record "grafana health=ready dashboard_provisioning=current-deployment-configmap dashboard_count=3"
 }
 
 smoke_verification() {

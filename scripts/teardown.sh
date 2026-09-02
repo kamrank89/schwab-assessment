@@ -778,14 +778,101 @@ inspect_cluster_existence() {
     --project="${PROJECT_ID}" --format=json 2>/dev/null)"; then
     die "Could not inspect cluster ${cluster_name}; refusing to treat an access or API error as absence."
   fi
+  jq -e '
+    type == "array" and
+    all(.[];
+      type == "object" and
+      (.name | type) == "string" and
+      ((.location // .zone // null) | type) == "string"
+    )
+  ' <<<"${cluster_inventory}" >/dev/null ||
+    die "Cluster inventory response is malformed; refusing to treat it as absence."
   cluster_count="$(jq -er --arg name "${cluster_name}" --arg location "${cluster_region}" '
     [.[] | select(.name == $name and ((.location // .zone // "") == $location))] | length
-  ' <<<"${cluster_inventory}")" || die "Cluster inventory response is malformed."
+  ' <<<"${cluster_inventory}")" || die "Cluster inventory response could not be classified."
   [[ "${cluster_count}" == "0" || "${cluster_count}" == "1" ]] ||
     die "Cluster discovery for ${cluster_name} returned an ambiguous result."
   if [[ "${cluster_count}" == "1" ]]; then
     CLUSTER_PRESENT="true"
   fi
+}
+
+DISCOVERED_STATE_STATUS=""
+DISCOVERED_STATE_GENERATION=""
+RECOVERY_INVENTORY_HISTORY_PRESENT="false"
+
+inspect_versioned_object() {
+  local object_name="$1"
+  local description="$2"
+  local versions_json
+  local matching_versions
+  local live_count
+  local historical_count
+
+  DISCOVERED_STATE_STATUS=""
+  DISCOVERED_STATE_GENERATION=""
+
+  refresh_adc_token
+  if ! versions_json="$(gcloud --access-token-file="${adc_token_file}" storage ls \
+    --all-versions --recursive --json "gs://${TF_STATE_BUCKET}" 2>/dev/null)"; then
+    die "Could not authoritatively list versioned state-bucket objects; refusing to treat an access or API error as absence."
+  fi
+  jq -e 'type == "array"' <<<"${versions_json}" >/dev/null ||
+    die "Versioned state-bucket object discovery returned malformed JSON."
+  matching_versions="$(jq -ce --arg object "${object_name}" '
+    [.[] | select(
+      (.metadata? | type) == "object" and
+      .metadata.name? == $object
+    )]
+  ' <<<"${versions_json}")" ||
+    die "Versioned ${description} discovery returned malformed metadata."
+  jq -e --arg object "${object_name}" '
+    all(.[];
+      .type == "cloud_object" and
+      (.metadata | type) == "object" and
+      .metadata.name == $object and
+      (.metadata.generation | type == "string" and test("^[1-9][0-9]*$")) and
+      ((.metadata | has("timeDeleted") | not) or
+       (.metadata.timeDeleted | type == "string" and length > 0))
+    )
+  ' <<<"${matching_versions}" >/dev/null ||
+    die "Versioned ${description} metadata is malformed or mismatched."
+  live_count="$(jq -er '[.[] | select((.metadata | has("timeDeleted")) | not)] | length' \
+    <<<"${matching_versions}")"
+  historical_count="$(jq -er '[.[] | select(.metadata | has("timeDeleted"))] | length' \
+    <<<"${matching_versions}")"
+  [[ "${live_count}" == "0" || "${live_count}" == "1" ]] ||
+    die "Versioned ${description} discovery returned more than one live generation."
+
+  if [[ "${live_count}" == "1" ]]; then
+    DISCOVERED_STATE_STATUS="present"
+    DISCOVERED_STATE_GENERATION="$(jq -er '
+      [.[] | select((.metadata | has("timeDeleted")) | not)][0].metadata.generation
+    ' <<<"${matching_versions}")"
+  elif ((historical_count > 0)); then
+    DISCOVERED_STATE_STATUS="historical-only"
+  else
+    DISCOVERED_STATE_STATUS="absent"
+  fi
+}
+
+inspect_stage_state_object() {
+  local stage="$1"
+
+  case "${stage}" in
+    platform|foundation) ;;
+    bootstrap|*) die "Refusing state discovery for Terraform root: ${stage}" ;;
+  esac
+  inspect_versioned_object "${stage}/default.tfstate" "${stage} state object"
+}
+
+inspect_recovery_inventory_history() {
+  inspect_versioned_object "${REMOTE_INVENTORY_OBJECT}" "controller recovery inventory object"
+  case "${DISCOVERED_STATE_STATUS}" in
+    absent) RECOVERY_INVENTORY_HISTORY_PRESENT="false" ;;
+    present|historical-only) RECOVERY_INVENTORY_HISTORY_PRESENT="true" ;;
+    *) die "Internal controller recovery inventory history classification error." ;;
+  esac
 }
 
 require_durable_inventory() {
@@ -806,6 +893,27 @@ remove_recovery_inventories() {
   REMOTE_INVENTORY_PRESENT="false"
 }
 
+inspect_stage_state_object platform
+platform_state_status="${DISCOVERED_STATE_STATUS}"
+inspect_stage_state_object foundation
+foundation_state_status="${DISCOVERED_STATE_STATUS}"
+
+[[ "${platform_state_status}" != "historical-only" ]] ||
+  die "Platform Terraform state has only noncurrent generations. Treat this as lost state and recover the exact live state before teardown."
+case "${foundation_state_status}" in
+  present) ;;
+  historical-only)
+    die "Foundation Terraform state has only noncurrent generations. Recover the exact live state before teardown."
+    ;;
+  absent)
+    die "Foundation Terraform state was never created or its complete history is unavailable; this teardown supports only a present foundation state."
+    ;;
+  *) die "Internal foundation state classification error." ;;
+esac
+if [[ "${platform_state_status}" == "absent" ]]; then
+  inspect_recovery_inventory_history
+fi
+
 reconcile_recovery_inventories_at_startup
 if [[ "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" == "true:true" ]]; then
   printf '%s\n' 'Validated matching local and durable teardown recovery inventories before cluster discovery.'
@@ -820,88 +928,111 @@ primary_cluster_present="${CLUSTER_PRESENT}"
 inspect_cluster_existence "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}"
 secondary_cluster_present="${CLUSTER_PRESENT}"
 
+platform_never_created="false"
+if [[ "${platform_state_status}" == "absent" ]]; then
+  if [[ "${primary_cluster_present}:${secondary_cluster_present}" != "false:false" ||
+    "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" != "false:false" ||
+    "${RECOVERY_INVENTORY_HISTORY_PRESENT}" != "false" ]]; then
+    die "Platform state is absent but cluster or controller-recovery evidence exists. Refusing to classify possible lost state as a never-created platform."
+  fi
+  platform_never_created="true"
+  printf '%s\n' 'Platform state has no live or noncurrent generation, both supported clusters are absent, and no live or noncurrent controller recovery inventory exists; using the foundation-only recovery path.'
+fi
+
 dns_primary=""
 dns_secondary=""
 mci_present="false"
-if [[ "${primary_cluster_present}" == "true" ]]; then
-  dns_primary="${temporary_root}/dns-primary.kubeconfig"
-  get_dns_credentials "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}" "${dns_primary}"
-  mci_json="$(KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" get \
-    "multiclusteringress.networking.gke.io/${MCI_NAME}" --ignore-not-found -o json)" ||
-    die "MultiClusterIngress lookup failed; refusing Kubernetes or Terraform mutation."
-  if [[ -n "${mci_json}" ]]; then
-    mci_present="true"
-    mci_uid="$(jq -er --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
-      select(.metadata.namespace == $namespace and .metadata.name == $name) |
-      .metadata.uid |
-      select(type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
-    ' <<<"${mci_json}")" || die "MultiClusterIngress identity is malformed."
-    raw_inventory="${temporary_root}/mci-controller-inventory.raw.tsv"
-    resolved_inventory="${temporary_root}/mci-controller-inventory.resolved.tsv"
-    enriched_inventory="${temporary_root}/mci-controller-inventory.enriched.tsv"
-    controller_inventory="${temporary_root}/mci-controller-inventory.final.tsv"
-    capture_controller_inventory "${mci_json}" "${raw_inventory}" "${resolved_inventory}"
-    append_backend_negs "${resolved_inventory}" "${enriched_inventory}"
-    deduplicate_inventory "${enriched_inventory}" "${controller_inventory}"
-    preflight_inventory "${controller_inventory}"
-    persist_preflighted_inventory "${controller_inventory}" "${mci_uid}"
-    printf '%s\n' 'Validated an exact, conflict-free local and durable controller inventory before Kubernetes deletion.'
+if [[ "${platform_never_created}" == "true" ]]; then
+  printf '%s\n' 'Skipping Kubernetes and controller cleanup because the platform stage is proven never-created.'
+else
+  if [[ "${primary_cluster_present}" == "true" ]]; then
+    dns_primary="${temporary_root}/dns-primary.kubeconfig"
+    get_dns_credentials "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}" "${dns_primary}"
+    mci_json="$(KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" get \
+      "multiclusteringress.networking.gke.io/${MCI_NAME}" --ignore-not-found -o json)" ||
+      die "MultiClusterIngress lookup failed; refusing Kubernetes or Terraform mutation."
+    if [[ -n "${mci_json}" ]]; then
+      mci_present="true"
+      mci_uid="$(jq -er --arg namespace "${MCI_NAMESPACE}" --arg name "${MCI_NAME}" '
+        select(.metadata.namespace == $namespace and .metadata.name == $name) |
+        .metadata.uid |
+        select(type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+      ' <<<"${mci_json}")" || die "MultiClusterIngress identity is malformed."
+      raw_inventory="${temporary_root}/mci-controller-inventory.raw.tsv"
+      resolved_inventory="${temporary_root}/mci-controller-inventory.resolved.tsv"
+      enriched_inventory="${temporary_root}/mci-controller-inventory.enriched.tsv"
+      controller_inventory="${temporary_root}/mci-controller-inventory.final.tsv"
+      capture_controller_inventory "${mci_json}" "${raw_inventory}" "${resolved_inventory}"
+      append_backend_negs "${resolved_inventory}" "${enriched_inventory}"
+      deduplicate_inventory "${enriched_inventory}" "${controller_inventory}"
+      preflight_inventory "${controller_inventory}"
+      persist_preflighted_inventory "${controller_inventory}" "${mci_uid}"
+      printf '%s\n' 'Validated an exact, conflict-free local and durable controller inventory before Kubernetes deletion.'
+    else
+      require_durable_inventory
+      printf '%s\n' 'MultiClusterIngress is already absent; resuming from durable recovery inventory.'
+    fi
   else
     require_durable_inventory
-    printf '%s\n' 'MultiClusterIngress is already absent; resuming from durable recovery inventory.'
+    printf '%s\n' 'Primary cluster is already absent; resuming from durable recovery inventory.'
   fi
-else
-  require_durable_inventory
-  printf '%s\n' 'Primary cluster is already absent; resuming from durable recovery inventory.'
-fi
 
-audit_persisted_inventory_access
+  audit_persisted_inventory_access
 
-if [[ "${secondary_cluster_present}" == "true" ]]; then
-  dns_secondary="${temporary_root}/dns-secondary.kubeconfig"
-  get_dns_credentials "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}" "${dns_secondary}"
-fi
+  if [[ "${secondary_cluster_present}" == "true" ]]; then
+    dns_secondary="${temporary_root}/dns-secondary.kubeconfig"
+    get_dns_credentials "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}" "${dns_secondary}"
+  fi
 
-if [[ "${primary_cluster_present}" == "true" ]]; then
-  printf '%s\n' 'Deleting applicable config-cluster resources.'
-  if [[ "${mci_present}" == "true" ]]; then
+  if [[ "${primary_cluster_present}" == "true" ]]; then
+    printf '%s\n' 'Deleting applicable config-cluster resources.'
+    if [[ "${mci_present}" == "true" ]]; then
+      KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
+        "multiclusteringress.networking.gke.io/${MCI_NAME}" \
+        --wait=true --timeout=20m
+    fi
     KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-      "multiclusteringress.networking.gke.io/${MCI_NAME}" \
-      --wait=true --timeout=20m
+      multiclusterservice.networking.gke.io/app-a-mcs \
+      multiclusterservice.networking.gke.io/app-b-mcs \
+      --ignore-not-found --wait=true --timeout=20m
+    KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
+      frontendconfig.networking.gke.io/assessment-https \
+      backendconfig.cloud.google.com/app-a-backend \
+      backendconfig.cloud.google.com/app-b-backend \
+      --ignore-not-found --wait=true --timeout=10m
+  else
+    printf '%s\n' 'Primary cluster is absent; its Kubernetes resources are already removed.'
   fi
-  KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-    multiclusterservice.networking.gke.io/app-a-mcs \
-    multiclusterservice.networking.gke.io/app-b-mcs \
-    --ignore-not-found --wait=true --timeout=20m
-  KUBECONFIG="${dns_primary}" kubectl -n "${MCI_NAMESPACE}" delete \
-    frontendconfig.networking.gke.io/assessment-https \
-    backendconfig.cloud.google.com/app-a-backend \
-    backendconfig.cloud.google.com/app-b-backend \
-    --ignore-not-found --wait=true --timeout=10m
-else
-  printf '%s\n' 'Primary cluster is absent; its Kubernetes resources are already removed.'
+
+  wait_for_controller_cleanup "${INVENTORY_FILE}"
+
+  printf '%s\n' 'Deleting regional workload, namespace, and access resources where clusters remain.'
+  if [[ "${secondary_cluster_present}" == "true" ]]; then
+    KUBECONFIG="${dns_secondary}" kubectl delete namespace assessment observability \
+      --ignore-not-found --wait=true --timeout=10m
+    KUBECONFIG="${dns_secondary}" kubectl delete \
+      clusterrole/assessment-deployer-gateway-impersonation \
+      clusterrolebinding/assessment-deployer-gateway-impersonation \
+      --ignore-not-found --wait=true --timeout=5m
+  else
+    printf '%s\n' 'Secondary cluster is absent; its Kubernetes resources are already removed.'
+  fi
+  if [[ "${primary_cluster_present}" == "true" ]]; then
+    KUBECONFIG="${dns_primary}" kubectl delete namespace assessment observability \
+      --ignore-not-found --wait=true --timeout=10m
+    KUBECONFIG="${dns_primary}" kubectl delete \
+      clusterrole/assessment-deployer-gateway-impersonation \
+      clusterrolebinding/assessment-deployer-gateway-impersonation \
+      --ignore-not-found --wait=true --timeout=5m
+  fi
 fi
 
-wait_for_controller_cleanup "${INVENTORY_FILE}"
-
-printf '%s\n' 'Deleting regional workload, namespace, and access resources where clusters remain.'
-if [[ "${secondary_cluster_present}" == "true" ]]; then
-  KUBECONFIG="${dns_secondary}" kubectl delete namespace assessment observability \
-    --ignore-not-found --wait=true --timeout=10m
-  KUBECONFIG="${dns_secondary}" kubectl delete \
-    clusterrole/assessment-deployer-gateway-impersonation \
-    clusterrolebinding/assessment-deployer-gateway-impersonation \
-    --ignore-not-found --wait=true --timeout=5m
+if [[ "${platform_never_created}" == "true" ]]; then
+  kubernetes_cleanup_result="skipped-platform-never-created"
+  multicluster_cleanup_result="skipped-platform-never-created"
 else
-  printf '%s\n' 'Secondary cluster is absent; its Kubernetes resources are already removed.'
-fi
-if [[ "${primary_cluster_present}" == "true" ]]; then
-  KUBECONFIG="${dns_primary}" kubectl delete namespace assessment observability \
-    --ignore-not-found --wait=true --timeout=10m
-  KUBECONFIG="${dns_primary}" kubectl delete \
-    clusterrole/assessment-deployer-gateway-impersonation \
-    clusterrolebinding/assessment-deployer-gateway-impersonation \
-    --ignore-not-found --wait=true --timeout=5m
+  kubernetes_cleanup_result="completed-or-already-absent"
+  multicluster_cleanup_result="completed-or-already-absent"
 fi
 
 PERSISTED_STATE_GENERATION=""
@@ -962,22 +1093,12 @@ calculate_terraform_state_binding_digest() {
 require_stage_state_generation() {
   local stage="$1"
   local expected_generation="$2"
-  local state_object="${stage}/default.tfstate"
-  local state_uri="gs://${TF_STATE_BUCKET}/${state_object}"
-  local object_metadata
   local current_generation
 
-  refresh_adc_token
-  if ! object_metadata="$(gcloud --access-token-file="${adc_token_file}" \
-    storage objects describe "${state_uri}" --format=json 2>/dev/null)"; then
-    die "The exact persisted ${stage} state object became unavailable; refusing Terraform initialization or planning."
-  fi
-  current_generation="$(jq -er --arg object "${state_object}" '
-    select(type == "object" and .name == $object) |
-    .generation |
-    select(type == "string" and test("^[1-9][0-9]*$"))
-  ' <<<"${object_metadata}")" ||
-    die "The exact persisted ${stage} state object metadata is malformed or mismatched."
+  inspect_stage_state_object "${stage}"
+  [[ "${DISCOVERED_STATE_STATUS}" == "present" ]] ||
+    die "The exact persisted ${stage} state object became unavailable or historical-only; refusing Terraform initialization or planning."
+  current_generation="${DISCOVERED_STATE_GENERATION}"
   [[ "${current_generation}" == "${expected_generation}" ]] ||
     die "The persisted ${stage} state changed concurrently. No destroy plan was evaluated; rerun teardown from a fresh state inspection."
 }
@@ -985,22 +1106,20 @@ require_stage_state_generation() {
 read_persisted_stage_state() {
   local stage="$1"
   local destination_file="$2"
-  local state_object="${stage}/default.tfstate"
-  local state_uri="gs://${TF_STATE_BUCKET}/${state_object}"
-  local object_metadata
+  local state_uri="gs://${TF_STATE_BUCKET}/${stage}/default.tfstate"
 
   PERSISTED_STATE_GENERATION=""
-  refresh_adc_token
-  if ! object_metadata="$(gcloud --access-token-file="${adc_token_file}" \
-    storage objects describe "${state_uri}" --format=json 2>/dev/null)"; then
-    die "Could not resolve the exact live persisted ${stage} state object; absence, access, and API errors are fatal before Terraform initialization."
-  fi
-  PERSISTED_STATE_GENERATION="$(jq -er --arg object "${state_object}" '
-    select(type == "object" and .name == $object) |
-    .generation |
-    select(type == "string" and test("^[1-9][0-9]*$"))
-  ' <<<"${object_metadata}")" ||
-    die "Persisted ${stage} state metadata is malformed, mismatched, or lacks a valid live generation."
+  inspect_stage_state_object "${stage}"
+  case "${DISCOVERED_STATE_STATUS}" in
+    present) PERSISTED_STATE_GENERATION="${DISCOVERED_STATE_GENERATION}" ;;
+    historical-only)
+      die "Persisted ${stage} state has only noncurrent generations; recover the exact live state before Terraform initialization."
+      ;;
+    absent)
+      die "The exact persisted ${stage} state object is absent; refusing Terraform initialization."
+      ;;
+    *) die "Internal persisted ${stage} state classification error." ;;
+  esac
 
   install -m 0600 /dev/null "${destination_file}"
   refresh_adc_token
@@ -1011,6 +1130,33 @@ read_persisted_stage_state() {
   chmod 0600 "${destination_file}"
   validate_terraform_state_snapshot "${destination_file}" "${stage}"
   require_stage_state_generation "${stage}" "${PERSISTED_STATE_GENERATION}"
+}
+
+TERRAFORM_STAGE_RESULT=""
+
+skip_never_created_stage() {
+  local stage="$1"
+  local primary_cluster_recheck
+  local secondary_cluster_recheck
+
+  [[ "${stage}" == "platform" ]] || die "Only the platform stage can be skipped as never-created."
+  inspect_stage_state_object "${stage}"
+  [[ "${DISCOVERED_STATE_STATUS}" == "absent" ]] ||
+    die "Platform state appeared or historical state became visible after foundation-only preflight; refusing to skip it."
+  inspect_cluster_existence "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}"
+  primary_cluster_recheck="${CLUSTER_PRESENT}"
+  inspect_cluster_existence "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}"
+  secondary_cluster_recheck="${CLUSTER_PRESENT}"
+  inspect_local_inventory
+  discover_remote_inventory "${remote_inventory_snapshot}"
+  inspect_recovery_inventory_history
+  if [[ "${primary_cluster_recheck}:${secondary_cluster_recheck}" != "false:false" ||
+    "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" != "false:false" ||
+    "${RECOVERY_INVENTORY_HISTORY_PRESENT}" != "false" ]]; then
+    die "Cluster or controller-recovery evidence appeared after foundation-only preflight; refusing to skip the platform stage."
+  fi
+  TERRAFORM_STAGE_RESULT="skipped-never-created"
+  printf '%s\n' 'Platform state, supported clusters, and controller inventory remain absent; skipping platform init, destroy plan, and apply.'
 }
 
 terraform_destroy_stage() {
@@ -1034,6 +1180,7 @@ terraform_destroy_stage() {
     platform|foundation) ;;
     bootstrap|*) die "Refusing teardown of Terraform root: ${stage}" ;;
   esac
+  TERRAFORM_STAGE_RESULT=""
   terraform_root="${REPO_ROOT}/infra/${stage}"
   plan_file="${temporary_root}/${stage}-destroy.tfplan"
   preinit_state_file="${temporary_root}/${stage}-persisted-preinit.tfstate"
@@ -1049,6 +1196,7 @@ terraform_destroy_stage() {
     require_stage_state_generation "${stage}" "${persisted_generation}"
     printf 'Terraform %s persisted remote state is valid and already empty; skipping init, destroy plan, and apply.\n' "${stage}"
     rm -f -- "${preinit_state_file}"
+    TERRAFORM_STAGE_RESULT="already-empty"
     return 0
   fi
 
@@ -1097,10 +1245,17 @@ terraform_destroy_stage() {
   fi
   TF_WORKSPACE=default terraform -chdir="${terraform_root}" apply -input=false -auto-approve "${plan_file}"
   rm -f -- "${plan_file}"
+  TERRAFORM_STAGE_RESULT="destroyed"
 }
 
-terraform_destroy_stage platform
+if [[ "${platform_never_created}" == "true" ]]; then
+  skip_never_created_stage platform
+else
+  terraform_destroy_stage platform
+fi
+platform_stage_result="${TERRAFORM_STAGE_RESULT}"
 terraform_destroy_stage foundation
+foundation_stage_result="${TERRAFORM_STAGE_RESULT}"
 
 report_dir="${REPO_ROOT}/artifacts/live"
 report_file="${report_dir}/teardown-$(date -u +'%Y%m%dT%H%M%SZ').txt"
@@ -1109,13 +1264,22 @@ install -m 0600 /dev/null "${report_file}"
 {
   printf 'timestamp_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   printf 'project=%s\n' "${PROJECT_ID}"
-  printf '%s\n' 'deleted=kubernetes-workloads,multicluster-resources,platform,foundation'
+  printf 'kubernetes_cleanup=%s\n' "${kubernetes_cleanup_result}"
+  printf 'multicluster_cleanup=%s\n' "${multicluster_cleanup_result}"
+  printf 'platform_stage=%s\n' "${platform_stage_result}"
+  printf 'foundation_stage=%s\n' "${foundation_stage_result}"
   printf 'retained_state_bucket=%s\n' "${TF_STATE_BUCKET}"
   printf 'retained_wif_provider=%s\n' "${GCP_WIF_PROVIDER}"
   printf 'retained_deployer_identity=%s\n' "${GCP_DEPLOYER_SERVICE_ACCOUNT}"
   printf '%s\n' 'retained_bootstrap_state=bootstrap'
-  printf '%s\n' 'controller_recovery_inventory=retained-through-successful-report'
+  if [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]]; then
+    printf '%s\n' 'controller_recovery_inventory=retained-through-successful-report'
+  else
+    printf '%s\n' 'controller_recovery_inventory=not-created-platform-never-created'
+  fi
 } | tee "${report_file}"
-remove_recovery_inventories
-printf '%s\n' 'controller_recovery_inventory=removed-after-successful-teardown' | tee -a "${report_file}"
+if [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]]; then
+  remove_recovery_inventories
+  printf '%s\n' 'controller_recovery_inventory=removed-after-successful-teardown' | tee -a "${report_file}"
+fi
 printf '%s\n' 'Teardown completed. Bootstrap state, WIF, deployer identity, and state bucket were intentionally retained.'

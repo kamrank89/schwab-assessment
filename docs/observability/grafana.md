@@ -17,7 +17,7 @@ The runtime GSA has Monitoring viewer, BigQuery job user, and dataset data viewe
 | `multicluster-operations.json` | Serving-region request volume, restarts by cluster, global backend p95 latency |
 | `traffic-log-analysis.json` | HTTP status traffic, top request paths, recent 5xx logs |
 
-`make validate-grafana` proves all committed JSON parses. `verify.sh smoke` proves only in a future live run that the Grafana Deployment is Ready and exactly three exports are provisioned. Datasource success and populated panels require live data and remain pending.
+`make validate-grafana` proves all committed JSON parses. `verify.sh smoke` proves only in a future live run that the Grafana Deployment is Ready and the exact ConfigMap referenced by its current `dashboards` volume has exactly these three JSON keys. Stale hash-suffixed ConfigMaps left by plain apply are ignored. Datasource success and populated panels require live data and remain pending.
 
 ## Access and evidence boundary
 
@@ -25,4 +25,4 @@ Follow [verification](../operations/verification.md) for the exact boundary. Aut
 
 ## Recovery
 
-If Grafana is lost, redeploy the primary overlay; do not attempt to recover `emptyDir`. Validate the password mount, plugin install, datasources, dashboard ConfigMaps, Deployment readiness, and a narrow query window. Production should add durable state where required, high availability, SSO, network access controls, plugin provenance management, alerting, and backup/restore.
+If Grafana is lost, redeploy the primary overlay; do not attempt to recover `emptyDir`. Validate the password mount, plugin install, datasources, the dashboard ConfigMap referenced by the current Deployment, Deployment readiness, and a narrow query window. Production should add durable state where required, high availability, SSO, network access controls, plugin provenance management, alerting, and backup/restore.

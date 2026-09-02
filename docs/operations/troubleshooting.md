@@ -22,6 +22,8 @@ Confirm `TF_STATE_BUCKET`, root prefix, default workspace, and whether another w
 
 If bootstrap reports conflicting local/remote or `errored.tfstate`, stop. Do not delete state, force-copy an unreviewed snapshot, or bypass the script. Capture filenames and error classes only, then perform a controlled HashiCorp state recovery with an independent review.
 
+Guarded teardown recognizes a foundation-only partial deployment only when version-aware listing finds a live foundation state, no live or noncurrent platform state, neither supported cluster, no local MCI recovery inventory, and no live or noncurrent exact durable inventory object. A historical-only platform/foundation object is lost state. Absent platform state plus a cluster or any inventory generation is also ambiguous and fails before mutation. Recover the exact live generation and controller inventory; never delete noncurrent versions to make an ambiguous environment resemble a never-created stage.
+
 ## Cluster or Fleet access failure
 
 The clusters have private nodes, disabled IP endpoints, and an IAM-authorized DNS endpoint. Deployment first uses `gcloud container clusters get-credentials --dns-endpoint` to install narrow RBAC, then Fleet Connect Gateway for routine operations. Check `USE_GKE_GCLOUD_AUTH_PLUGIN=True`, the 582.0.0 CLI and plugin, IAM `container.clusters.connect`/Fleet permissions, membership readiness, and Kubernetes RBAC.
@@ -55,6 +57,7 @@ Do not manually delete controller-created load-balancer resources while MCI stil
 - Certificate `PROVISIONING`: confirm the exact hostname publicly resolves to the load balancer, no conflicting records exist, and sufficient time has elapsed.
 - HTTP stays 2xx after certificate activation: confirm the `https` overlay and `FrontendConfig` reconciled.
 - HTTPS 4xx/5xx: separate frontend certificate status from backend health and application paths.
+- HTTPS-to-HTTP preparation fails: keep foundation unchanged, confirm all three target booleans are false, both state outputs name the same certificate, the HTTP overlay removed both MCI annotations, and no target HTTPS/SSL proxy still references that certificate. Retry the guarded first dispatch; do not start the ordinary deletion dispatch until it succeeds.
 
 Read-only checks:
 
@@ -78,9 +81,9 @@ gcloud secrets versions list app-a-demo --project="${GCP_PROJECT_ID}" --format='
 
 ## BigQuery has no tables or Grafana has no data
 
-Log Router table creation is eventual and requires matching logs. Verify the sink writer has dataset editor, generate only benign assessment traffic, wait for the bounded smoke loop, and use `schema-discovery.sql` to inspect table names. The committed data queries require `start_time` and `end_time`; keep the window narrow. A successful dry run does not prove rows exist.
+Log Router table creation is eventual and requires matching logs. Verify the sink writer has dataset editor and generate only benign assessment traffic. Smoke repeatedly executes the rendered metadata-only `schema-discovery.sql` until exact tables `stdout`, `requests`, `kubelet`, and `kube_apiserver` expose the required compatible top-level columns; it times out before any dry run if that contract is not met. The committed data queries require `start_time` and `end_time`; keep the window narrow. A successful dry run does not prove rows exist, and schema payloads/log rows must not enter workflow artifacts.
 
-For Grafana, verify the Pod is Ready, the BigQuery plugin installed, three dashboard ConfigMaps are present, and the Grafana runtime identity has BigQuery viewer/job-user and Monitoring viewer. Grafana uses ephemeral storage and may restart with no saved UI changes; committed provisioning is authoritative.
+For Grafana, verify the Pod is Ready, the BigQuery plugin installed, and the exact ConfigMap named by the current Deployment's `dashboards` volume contains only the three expected JSON keys. Old hash-suffixed generator ConfigMaps can remain after apply and must not be counted. Also check that the Grafana runtime identity has BigQuery viewer/job-user and Monitoring viewer. Grafana uses ephemeral storage and may restart with no saved UI changes; committed provisioning is authoritative.
 
 ## Planned readiness-probe exercise — not yet executed
 

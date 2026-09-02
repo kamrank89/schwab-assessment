@@ -921,7 +921,7 @@ validate_terraform_state_snapshot() {
     all(.outputs | to_entries[];
       (.key | type == "string" and length > 0) and
       (.value | type == "object") and
-      (.value.sensitive | type == "boolean") and
+      (.value | ((has("sensitive") | not) or (.sensitive | type == "boolean"))) and
       (.value | has("type") and has("value"))
     ) and
     (.resources | type == "array") and
@@ -987,27 +987,20 @@ read_persisted_stage_state() {
   local destination_file="$2"
   local state_object="${stage}/default.tfstate"
   local state_uri="gs://${TF_STATE_BUCKET}/${state_object}"
-  local object_inventory
-  local object_count
+  local object_metadata
 
   PERSISTED_STATE_GENERATION=""
   refresh_adc_token
-  if ! object_inventory="$(gcloud --access-token-file="${adc_token_file}" \
-    storage objects list "gs://${TF_STATE_BUCKET}/${stage}/**" --format=json 2>/dev/null)"; then
-    die "Could not inspect the exact persisted ${stage} state object; access and API errors are fatal before Terraform initialization."
+  if ! object_metadata="$(gcloud --access-token-file="${adc_token_file}" \
+    storage objects describe "${state_uri}" --format=json 2>/dev/null)"; then
+    die "Could not resolve the exact live persisted ${stage} state object; absence, access, and API errors are fatal before Terraform initialization."
   fi
-  jq -e 'type == "array"' <<<"${object_inventory}" >/dev/null ||
-    die "Persisted ${stage} state discovery returned malformed JSON."
-  object_count="$(jq -er --arg object "${state_object}" \
-    '[.[] | select(.name == $object)] | length' <<<"${object_inventory}")" ||
-    die "Persisted ${stage} state discovery could not resolve the exact object."
-  [[ "${object_count}" == "1" ]] ||
-    die "Persisted ${stage} state discovery requires exactly one live ${state_uri}; absence or ambiguity is fatal before Terraform initialization."
   PERSISTED_STATE_GENERATION="$(jq -er --arg object "${state_object}" '
-    [.[] | select(.name == $object)][0].generation |
+    select(type == "object" and .name == $object) |
+    .generation |
     select(type == "string" and test("^[1-9][0-9]*$"))
-  ' <<<"${object_inventory}")" ||
-    die "Persisted ${stage} state discovery returned an invalid object generation."
+  ' <<<"${object_metadata}")" ||
+    die "Persisted ${stage} state metadata is malformed, mismatched, or lacks a valid live generation."
 
   install -m 0600 /dev/null "${destination_file}"
   refresh_adc_token

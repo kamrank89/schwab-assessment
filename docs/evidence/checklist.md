@@ -72,7 +72,7 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 
 - [ ] separate `teardown.yml` workflow URL, UTC time, commit, actor, and reviewer
 - [ ] MCI controller inventory was captured before deletion and removed only after success
-- [ ] normal path: workloads/MCI/MCS deleted before platform, then foundation; foundation-only path: live foundation state, never-created platform proof, and skipped cleanup/stage are recorded
+- [ ] normal path: workloads/MCI/MCS deleted before platform, then foundation, completion marker bound before live inventory removal; foundation-only path records either complete never-created proof or exact completion-bound empty-platform proof and the corresponding skipped cleanup/stage result
 - [ ] redacted report states each cleanup/stage result without presenting skipped or already-empty stages as deleted
 - [ ] residual check records the intentionally retained project, state bucket/state prefixes and versions, WIF provider, deployer identity/IAM, and bootstrap APIs
 - [ ] billing report checked after provider lag; no literal $0 guarantee

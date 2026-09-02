@@ -1,6 +1,6 @@
 # Evidence status
 
-Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` worktree. No Google Cloud authentication, Terraform plan/apply/destroy/state operation, lifecycle script, `gcloud`, `bq`, `kubectl`, `gh`, workflow dispatch, deployment, drill, or teardown command was run for this final integration fix wave.
+Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` worktree. No Google Cloud authentication, Terraform plan/apply/destroy/state operation, lifecycle script, executable Cloud SDK operation, `bq`, `kubectl`, `gh`, workflow dispatch, deployment, drill, or teardown command was run for this authorized teardown safety round.
 
 ## Status vocabulary
 
@@ -15,6 +15,7 @@ Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` 
 | Scope | Command | Result | Status |
 | --- | --- | --- | --- |
 | Full repository validation | `make validate` | Exit 0. Terraform formatting and all three `init -backend=false` validations succeeded; Kubernetes summaries had zero invalid/errors; Bash/ShellCheck, actionlint, and Grafana JSON parsing succeeded. GKE-specific schemas were skipped where unavailable. | `verified-account-free` |
+| Authorized teardown safety round | `bash -n scripts/teardown.sh`; `shellcheck scripts/teardown.sh`; `make validate`; tracked-Markdown relative-link scan; sensitive-artifact search; `git diff --check` | Exit 0. The completion-bound empty-platform path and exact live/noncurrent/soft-deleted object classifier passed repository-native syntax/static checks. No lifecycle path or cloud behavior was exercised. | `verified-account-free` |
 | Final integration focused checks | `bash -n` and `shellcheck` for `deploy.sh`, `teardown.sh`, and `verify.sh`; `actionlint` for `deploy.yml`; focused Kustomize/Kubeconform renders | Exit 0. All four changed control flows passed syntax/static workflow analysis; the primary workload and HTTP/TLS/HTTPS config overlays rendered with zero invalid resources or errors. This does not exercise a cloud lifecycle path. | `verified-account-free` |
 | Focused immutable-subject regression checks | `terraform fmt -check -recursive infra`; bootstrap `init -backend=false` and `validate`; `bash -n scripts/bootstrap.sh`; `shellcheck scripts/bootstrap.sh` | Exit 0 after standard formatting; bootstrap Terraform and recovery-script syntax/static analysis succeeded. This does not mint or inspect a GitHub token. | `verified-account-free` |
 | Requirements preservation | `git show eb21425a79a0b03a763d0c90571eea1cf11c9df3:docs/requirments.md \| cmp - docs/requirements/assessment-source.md` | Exit 0; the renamed file is byte-for-byte equal to the supplied source at the pre-documentation base commit. | `verified-account-free` |

@@ -6,7 +6,7 @@
 
 “A global reserved IP feeds MCI/MCS, which routes `/app-a` and `/app-b` to healthy Pods in both regions and attaches Cloud Armor. HTTP by IP is the safe first verification path; owned DNS and a managed certificate are optional. Logs flow through Cloud Logging into partitioned BigQuery tables, and committed Grafana exports include the four required overview panels.
 
-“Validation is account-free. Deployment and teardown are manual `main` workflows using short-lived OIDC/WIF credentials. HTTPS downgrades use a first dispatch that returns MCI to HTTP and proves the certificate is detached, then an ordinary dispatch may delete certificate/DNS resources. Teardown inventories controller-owned load-balancer resources, deletes in reverse order, and intentionally retains bootstrap/WIF/state so redeploy is simple; it also supports a provably never-created platform after a foundation-only partial deploy. I do not claim live results: endpoints, failover, dashboards, queries, IAM, and teardown remain evidence-pending until an authorized, redacted run.”
+“Validation is account-free. Deployment and teardown are manual `main` workflows using short-lived OIDC/WIF credentials. HTTPS downgrades use a first dispatch that returns MCI to HTTP and proves the certificate is detached, then an ordinary dispatch may delete certificate/DNS resources. Teardown inventories controller-owned load-balancer resources, deletes in reverse order, and intentionally retains bootstrap/WIF/state so redeploy is simple; it supports both a provably never-created platform and a post-teardown foundation-only partial redeploy whose unchanged empty platform state matches a durable completion marker. I do not claim live results: endpoints, failover, dashboards, queries, IAM, and teardown remain evidence-pending until an authorized, redacted run.”
 
 ## Shortest operator story
 
@@ -56,7 +56,7 @@ Destroying the identity and state anchor in the same path that needs them is fra
 - **Is failover tested?** No. The repository has a bounded application-backend exercise with restoration traps; it remains pending until deliberately run.
 - **Is Grafana working?** Three JSON exports parse and are committed; live Pod/datasource/panel health is pending.
 - **Are the BigQuery queries proven?** Their source is reviewed; future smoke first waits for the four exact routed tables and compatible top-level schema, then dry-runs all seven. Useful rows and results are still live evidence.
-- **Did teardown leave nothing?** No teardown has run, and normal teardown intentionally retains bootstrap state/WIF/deployer. A residual record must distinguish destroyed, already-empty, and skipped stages from retained anchors. Historical-only state is a recovery stop, not proof that a stage never existed.
+- **Did teardown leave nothing?** No teardown has run, and normal teardown intentionally retains bootstrap state/WIF/deployer plus empty state and its completion marker. A residual record must distinguish destroyed, already-empty, and both skipped-stage proofs from retained anchors. Historical-only or soft-deleted-only state is a recovery stop, not proof that a stage never existed.
 
 ## Likely follow-up improvements
 

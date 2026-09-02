@@ -103,6 +103,11 @@ validate_environment() {
     die "GCP_ENABLE_HTTPS must be true or false."
   [[ "${GCP_DEPLOYER_SERVICE_ACCOUNT}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$ ]] ||
     die "Invalid GCP_DEPLOYER_SERVICE_ACCOUNT."
+  if [[ "${GCP_ENABLE_HTTPS}" == "true" ]]; then
+    require_environment GCP_DNS_NAME
+    [[ "${GCP_DNS_NAME}" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] ||
+      die "GCP_DNS_NAME must be a valid hostname when HTTPS is enabled."
+  fi
 }
 
 prepare_kubeconfig() {
@@ -245,7 +250,7 @@ verify_backend_health() {
     backend_count=$((backend_count + 1))
     health_json="$(gcloud compute backend-services get-health "${backend_service}" \
       --global --project="${GCP_PROJECT_ID}" --format=json)"
-    jq -e '[.[]?.healthStatus[]?] |
+    jq -e '[.[]?.status.healthStatus[]?] |
       (length > 0 and all(.healthState == "HEALTHY"))' <<<"${health_json}" >/dev/null ||
       die "Backend service ${backend_service} is not fully HEALTHY."
     record "backend_service=${backend_service} health=HEALTHY"

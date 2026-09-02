@@ -8,3 +8,4 @@ artifacts/
 crash.log
 terraform.tfvars
 terraform.tfvars.json
+infra/bootstrap/backend.generated.tf

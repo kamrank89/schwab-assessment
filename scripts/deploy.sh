@@ -234,6 +234,37 @@ wait_for_certificate() {
   die "Managed certificate did not become ACTIVE before the bounded timeout."
 }
 
+route_status_code() {
+  local url="$1"
+
+  curl --silent --show-error --output /dev/null --connect-timeout 10 --max-time 30 \
+    --write-out '%{http_code}' "${url}"
+}
+
+wait_for_https_reconciliation() {
+  local deadline=$((SECONDS + RECONCILE_TIMEOUT_SECONDS))
+  local http_app_a
+  local http_app_b
+  local https_app_a
+  local https_app_b
+
+  while ((SECONDS < deadline)); do
+    http_app_a="$(route_status_code "http://${GCP_DNS_NAME}/app-a" || true)"
+    http_app_b="$(route_status_code "http://${GCP_DNS_NAME}/app-b" || true)"
+    https_app_a="$(route_status_code "https://${GCP_DNS_NAME}/app-a" || true)"
+    https_app_b="$(route_status_code "https://${GCP_DNS_NAME}/app-b" || true)"
+    if [[ "${http_app_a}" =~ ^3[0-9][0-9]$ &&
+      "${http_app_b}" =~ ^3[0-9][0-9]$ &&
+      "${https_app_a}" =~ ^2[0-9][0-9]$ &&
+      "${https_app_b}" =~ ^2[0-9][0-9]$ ]]; then
+      printf '%s\n' 'HTTPS routing reconciled: HTTP redirects and HTTPS application routes are healthy.'
+      return 0
+    fi
+    sleep 15
+  done
+  die "HTTPS redirect and application routes did not reconcile before the bounded timeout."
+}
+
 deploy_workloads() {
   local platform_json
   local app_a_gsa_email
@@ -251,7 +282,7 @@ deploy_workloads() {
   local gateway_secondary
   local gateway_config
 
-  for command_name in terraform jq gcloud kubectl kustomize openssl; do
+  for command_name in terraform jq gcloud kubectl kustomize openssl curl; do
     require_command "${command_name}"
   done
   validate_common_environment
@@ -326,7 +357,7 @@ deploy_workloads() {
     apply_overlay "${gateway_config}" "${render_root}/overlays/config-us-central1/tls"
     wait_for_certificate "${tls_certificate_name}"
     apply_overlay "${gateway_config}" "${render_root}/overlays/config-us-central1/https"
-    wait_for_mci_vip "${gateway_config}" "${global_ipv4_address}"
+    wait_for_https_reconciliation
   fi
 
   printf '%s\n' 'Workload deployment and bounded reconciliation checks completed.'

@@ -131,7 +131,9 @@ done
 mkdir -p "${REPO_ROOT}/.generated"
 temporary_dir="$(mktemp -d "${REPO_ROOT}/.generated/render.XXXXXX")"
 cleanup() {
-  rm -rf -- "${temporary_dir}"
+  if [[ -n "${temporary_dir}" ]]; then
+    rm -rf -- "${temporary_dir}"
+  fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -166,5 +168,5 @@ fi
 
 rm -rf -- "${OUTPUT_DIR}"
 mv "${temporary_dir}" "${OUTPUT_DIR}"
-temporary_dir="${REPO_ROOT}/.generated/.render-complete"
+temporary_dir=""
 printf 'Rendered manifests are available in %s\n' "${OUTPUT_DIR}"

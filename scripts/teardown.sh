@@ -103,14 +103,202 @@ get_dns_credentials() {
   chmod 0600 "${kubeconfig}"
 }
 
-terraform -chdir="${REPO_ROOT}/infra/platform" init -input=false -reconfigure \
-  -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=platform" >/dev/null
-global_ipv4_address="$(terraform -chdir="${REPO_ROOT}/infra/platform" output -raw global_ipv4_address)"
+normalize_resource_name() {
+  local raw_name="$1"
+  local resource_name
+
+  raw_name="${raw_name#"${raw_name%%[![:space:]]*}"}"
+  raw_name="${raw_name%"${raw_name##*[![:space:]]}"}"
+  raw_name="${raw_name#\"}"
+  raw_name="${raw_name%\"}"
+  raw_name="${raw_name#\'}"
+  raw_name="${raw_name%\'}"
+  raw_name="${raw_name%%\?*}"
+  raw_name="${raw_name%/}"
+  resource_name="${raw_name##*/}"
+  [[ "${resource_name}" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] ||
+    die "MultiClusterIngress status contains an invalid controller resource reference."
+  printf '%s\n' "${resource_name}"
+}
+
+append_status_inventory() {
+  local mci_json="$1"
+  local resource_kind="$2"
+  local jq_selector="$3"
+  local destination="$4"
+  local value_type
+  local raw_values
+  local raw_value
+  local resource_name
+  local count=0
+
+  value_type="$(jq -r "(${jq_selector}) | type" <<<"${mci_json}")"
+  [[ "${value_type}" == "string" || "${value_type}" == "array" ]] ||
+    die "MultiClusterIngress status does not expose required ${resource_kind} inventory."
+  raw_values="$(jq -r "(${jq_selector}) |
+    if type == \"array\" then .[]
+    elif type == \"string\" then split(\",\")[]
+    else empty
+    end" <<<"${mci_json}")"
+  while IFS= read -r raw_value; do
+    [[ -n "${raw_value}" ]] || continue
+    resource_name="$(normalize_resource_name "${raw_value}")"
+    printf '%s\t%s\n' "${resource_kind}" "${resource_name}" >>"${destination}"
+    count=$((count + 1))
+  done <<<"${raw_values}"
+  ((count > 0)) || die "MultiClusterIngress status exposes empty ${resource_kind} inventory."
+}
+
+compute_resource_exists() {
+  local resource_kind="$1"
+  local resource_name="$2"
+  local resource_inventory
+  local resource_count
+
+  case "${resource_kind}" in
+    forwarding-rule)
+      resource_inventory="$(gcloud compute forwarding-rules list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller forwarding rules."
+      ;;
+    target-http-proxy)
+      resource_inventory="$(gcloud compute target-http-proxies list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller HTTP target proxies."
+      ;;
+    target-https-proxy)
+      resource_inventory="$(gcloud compute target-https-proxies list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller HTTPS target proxies."
+      ;;
+    url-map)
+      resource_inventory="$(gcloud compute url-maps list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller URL maps."
+      ;;
+    health-check)
+      resource_inventory="$(gcloud compute health-checks list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller health checks."
+      ;;
+    backend-service)
+      resource_inventory="$(gcloud compute backend-services list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller backend services."
+      ;;
+    firewall-rule)
+      resource_inventory="$(gcloud compute firewall-rules list \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller firewall rules."
+      ;;
+    ssl-certificate)
+      resource_inventory="$(gcloud compute ssl-certificates list --global \
+        --project="${PROJECT_ID}" --format=json 2>/dev/null)" ||
+        die "Could not inspect controller SSL certificates."
+      ;;
+    *) die "Internal controller-resource kind error: ${resource_kind}" ;;
+  esac
+  resource_count="$(jq -er --arg name "${resource_name}" \
+    '[.[] | select(.name == $name)] | length' <<<"${resource_inventory}")"
+  [[ "${resource_count}" == "0" || "${resource_count}" == "1" ]] ||
+    die "Controller resource lookup returned an ambiguous result."
+  [[ "${resource_count}" == "1" ]]
+}
+
+capture_controller_inventory() {
+  local mci_json="$1"
+  local raw_inventory="$2"
+  local resolved_inventory="$3"
+  local resource_kind
+  local resource_name
+  local http_exists
+  local https_exists
+  local controller_tls_secret_count
+
+  install -m 0600 /dev/null "${raw_inventory}"
+  install -m 0600 /dev/null "${resolved_inventory}"
+  append_status_inventory "${mci_json}" forwarding-rule \
+    '.status.cloudResources.ForwardingRules // .status.cloudResources.forwardingRules' "${raw_inventory}"
+  append_status_inventory "${mci_json}" target-proxy \
+    '.status.cloudResources.TargetProxies // .status.cloudResources.targetProxies' "${raw_inventory}"
+  append_status_inventory "${mci_json}" url-map \
+    '.status.cloudResources.UrlMap // .status.cloudResources.urlMap // .status.cloudResources.UrlMaps // .status.cloudResources.urlMaps' "${raw_inventory}"
+  append_status_inventory "${mci_json}" health-check \
+    '.status.cloudResources.HealthChecks // .status.cloudResources.healthChecks' "${raw_inventory}"
+  append_status_inventory "${mci_json}" backend-service \
+    '.status.cloudResources.BackendServices // .status.cloudResources.backendServices' "${raw_inventory}"
+  append_status_inventory "${mci_json}" firewall-rule \
+    '.status.cloudResources.Firewalls // .status.cloudResources.firewalls // .status.cloudResources.FirewallRules // .status.cloudResources.firewallRules' "${raw_inventory}"
+
+  # Certificates referenced by networking.gke.io/pre-shared-certs are owned by
+  # Terraform in this repository. Only inventory a certificate when the MCI
+  # spec asks the controller to create one from a Kubernetes TLS Secret.
+  controller_tls_secret_count="$(jq -er \
+    '[.spec.template.spec.tls[]? | select(.secretName | type == "string" and length > 0)] | length' \
+    <<<"${mci_json}")"
+  if ((controller_tls_secret_count > 0)); then
+    append_status_inventory "${mci_json}" ssl-certificate \
+      '.status.cloudResources.SSLCertificates // .status.cloudResources.SslCertificates // .status.cloudResources.sslCertificates // .status.cloudResources.Certificates // .status.cloudResources.certificates' "${raw_inventory}"
+  fi
+
+  while IFS=$'\t' read -r resource_kind resource_name; do
+    if [[ "${resource_kind}" != "target-proxy" ]]; then
+      printf '%s\t%s\n' "${resource_kind}" "${resource_name}" >>"${resolved_inventory}"
+      continue
+    fi
+    http_exists=false
+    https_exists=false
+    if compute_resource_exists target-http-proxy "${resource_name}"; then
+      http_exists=true
+    fi
+    if compute_resource_exists target-https-proxy "${resource_name}"; then
+      https_exists=true
+    fi
+    if [[ "${http_exists}:${https_exists}" == "true:false" ]]; then
+      printf 'target-http-proxy\t%s\n' "${resource_name}" >>"${resolved_inventory}"
+    elif [[ "${http_exists}:${https_exists}" == "false:true" ]]; then
+      printf 'target-https-proxy\t%s\n' "${resource_name}" >>"${resolved_inventory}"
+    else
+      die "Could not uniquely resolve a controller target proxy from MultiClusterIngress status."
+    fi
+  done <"${raw_inventory}"
+  [[ -s "${resolved_inventory}" ]] || die "Controller resource inventory is empty."
+}
+
+wait_for_controller_cleanup() {
+  local inventory_file="$1"
+  local deadline=$((SECONDS + LOAD_BALANCER_TIMEOUT_SECONDS))
+  local resource_kind
+  local resource_name
+  local remaining_count
+
+  while ((SECONDS < deadline)); do
+    remaining_count=0
+    while IFS=$'\t' read -r resource_kind resource_name; do
+      if compute_resource_exists "${resource_kind}" "${resource_name}"; then
+        remaining_count=$((remaining_count + 1))
+      fi
+    done <"${inventory_file}"
+    if ((remaining_count == 0)); then
+      printf '%s\n' 'All controller-managed MultiClusterIngress cloud resources have been removed.'
+      return 0
+    fi
+    sleep 20
+  done
+  die "${remaining_count} inventoried controller-managed cloud resources remain after the bounded timeout."
+}
 
 dns_primary="${temporary_root}/dns-primary.kubeconfig"
 dns_secondary="${temporary_root}/dns-secondary.kubeconfig"
 get_dns_credentials "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}" "${dns_primary}"
 get_dns_credentials "${SECONDARY_CLUSTER}" "${SECONDARY_REGION}" "${dns_secondary}"
+
+mci_json="$(KUBECONFIG="${dns_primary}" kubectl -n assessment get \
+  multiclusteringress.networking.gke.io/assessment-ingress -o json)" ||
+  die "MultiClusterIngress inventory is unavailable; refusing destructive Terraform teardown."
+raw_inventory="${temporary_root}/mci-controller-inventory.raw.tsv"
+controller_inventory="${temporary_root}/mci-controller-inventory.tsv"
+capture_controller_inventory "${mci_json}" "${raw_inventory}" "${controller_inventory}"
 
 printf '%s\n' 'Deleting MultiClusterIngress and MultiClusterService resources first.'
 KUBECONFIG="${dns_primary}" kubectl -n assessment delete \
@@ -126,18 +314,7 @@ KUBECONFIG="${dns_primary}" kubectl -n assessment delete \
   backendconfig.cloud.google.com/app-b-backend \
   --ignore-not-found --wait=true --timeout=10m
 
-deadline=$((SECONDS + LOAD_BALANCER_TIMEOUT_SECONDS))
-while ((SECONDS < deadline)); do
-  forwarding_rule_count="$(gcloud compute forwarding-rules list --global --project="${PROJECT_ID}" \
-    --filter="IPAddress=${global_ipv4_address}" --format=json | jq -er 'length')"
-  if [[ "${forwarding_rule_count}" == "0" ]]; then
-    break
-  fi
-  sleep 20
-done
-[[ "${forwarding_rule_count}" == "0" ]] ||
-  die "Managed load-balancer forwarding rules did not clean up before the bounded timeout."
-printf '%s\n' 'Managed load-balancer forwarding rules have been removed.'
+wait_for_controller_cleanup "${controller_inventory}"
 
 printf '%s\n' 'Deleting regional workload and namespace resources.'
 KUBECONFIG="${dns_secondary}" kubectl delete namespace assessment observability \

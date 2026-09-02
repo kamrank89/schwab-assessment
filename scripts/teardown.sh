@@ -38,6 +38,16 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Required command is missing: $1"
 }
 
+refresh_adc_token() {
+  install -m 0600 /dev/null "${adc_token_file}"
+  if ! gcloud auth application-default print-access-token >"${adc_token_file}" 2>/dev/null; then
+    : >"${adc_token_file}"
+    die "Application Default Credentials are unavailable; teardown storage inspection cannot use the Terraform identity."
+  fi
+  [[ -s "${adc_token_file}" ]] || die "Application Default Credentials returned an empty access token."
+  chmod 0600 "${adc_token_file}"
+}
+
 PROJECT_ID=""
 CONFIRMATION=""
 
@@ -93,6 +103,7 @@ temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/gke-assessment-teardown.XXXXXX")"
 chmod 0700 "${temporary_root}"
 inventory_candidate=""
 remote_inventory_snapshot="${temporary_root}/remote-controller-inventory.json"
+adc_token_file="${temporary_root}/adc-access-token"
 cleanup() {
   if [[ -n "${inventory_candidate}" ]]; then
     rm -f -- "${inventory_candidate}"
@@ -543,7 +554,8 @@ discover_remote_inventory() {
 
   REMOTE_INVENTORY_PRESENT="false"
   install -m 0600 /dev/null "${destination_file}"
-  if ! object_inventory="$(gcloud storage objects list \
+  refresh_adc_token
+  if ! object_inventory="$(gcloud --access-token-file="${adc_token_file}" storage objects list \
     "gs://${TF_STATE_BUCKET}/recovery/**" --format=json 2>/dev/null)"; then
     die "Could not inspect durable teardown recovery storage; refusing to treat an access or API error as absence."
   fi
@@ -555,7 +567,9 @@ discover_remote_inventory() {
   if [[ "${object_count}" == "0" ]]; then
     return 0
   fi
-  if ! gcloud storage cat "${REMOTE_INVENTORY_URI}" >"${destination_file}" 2>/dev/null; then
+  refresh_adc_token
+  if ! gcloud --access-token-file="${adc_token_file}" storage cat \
+    "${REMOTE_INVENTORY_URI}" >"${destination_file}" 2>/dev/null; then
     die "Durable teardown recovery inventory exists but could not be read."
   fi
   chmod 0600 "${destination_file}"
@@ -636,7 +650,9 @@ create_durable_inventory_without_replacement() {
     die "Refusing to replace an existing durable teardown recovery inventory."
   calculate_file_digest "${INVENTORY_FILE}"
   local_digest="${FILE_DIGEST}"
-  if ! gcloud storage cp "${INVENTORY_FILE}" "${REMOTE_INVENTORY_URI}" \
+  refresh_adc_token
+  if ! gcloud --access-token-file="${adc_token_file}" storage cp \
+    "${INVENTORY_FILE}" "${REMOTE_INVENTORY_URI}" \
     --if-generation-match=0 --quiet >/dev/null 2>&1; then
     die "Could not create the durable teardown recovery inventory without replacement. No Kubernetes mutation was attempted; inspect and reconcile any concurrently created object before retrying."
   fi
@@ -781,7 +797,9 @@ require_durable_inventory() {
 remove_recovery_inventories() {
   [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
     die "Durable recovery inventory unexpectedly became unavailable before final cleanup."
-  if ! gcloud storage rm --all-versions "${REMOTE_INVENTORY_URI}" --quiet >/dev/null; then
+  refresh_adc_token
+  if ! gcloud --access-token-file="${adc_token_file}" storage rm \
+    --all-versions "${REMOTE_INVENTORY_URI}" --quiet >/dev/null; then
     die "Teardown completed but the exact durable recovery object could not be removed; the local copy was retained."
   fi
   rm -f -- "${INVENTORY_FILE}"
@@ -886,13 +904,138 @@ if [[ "${primary_cluster_present}" == "true" ]]; then
     --ignore-not-found --wait=true --timeout=5m
 fi
 
+PERSISTED_STATE_GENERATION=""
+TERRAFORM_STATE_BINDING_DIGEST=""
+
+validate_terraform_state_snapshot() {
+  local state_file="$1"
+  local stage="$2"
+
+  jq -e '
+    type == "object" and
+    .version == 4 and
+    (.terraform_version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?$")) and
+    (.serial | type == "number" and . >= 0 and floor == .) and
+    (.lineage | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.outputs | type == "object") and
+    all(.outputs | to_entries[];
+      (.key | type == "string" and length > 0) and
+      (.value | type == "object") and
+      (.value.sensitive | type == "boolean") and
+      (.value | has("type") and has("value"))
+    ) and
+    (.resources | type == "array") and
+    all(.resources[];
+      type == "object" and
+      (.mode == "managed" or .mode == "data") and
+      (.type | type == "string" and length > 0) and
+      (.name | type == "string" and length > 0) and
+      (.provider | type == "string" and length > 0) and
+      ((has("module") | not) or (.module | type == "string" and length > 0)) and
+      (.instances | type == "array") and
+      all(.instances[];
+        type == "object" and
+        (.schema_version | type == "number" and . >= 0 and floor == .) and
+        has("attributes") and
+        ((.attributes | type) == "object" or (.attributes | type) == "null") and
+        ((has("sensitive_attributes") | not) or (.sensitive_attributes | type == "array")) and
+        ((has("private") | not) or (.private | type == "string")) and
+        ((has("dependencies") | not) or
+          (.dependencies | type == "array" and all(.[]; type == "string")))
+      )
+    )
+  ' "${state_file}" >/dev/null ||
+    die "The persisted ${stage} Terraform state is malformed or ambiguous; recover it manually before teardown."
+}
+
+calculate_terraform_state_binding_digest() {
+  local state_file="$1"
+  local canonical_state
+
+  canonical_state="$(jq -ceS '.' "${state_file}")" ||
+    die "Could not canonicalize the Terraform state binding."
+  read -r TERRAFORM_STATE_BINDING_DIGEST _ < <(sha256sum <<<"${canonical_state}")
+  [[ "${TERRAFORM_STATE_BINDING_DIGEST}" =~ ^[a-f0-9]{64}$ ]] ||
+    die "Could not calculate the Terraform state binding digest."
+}
+
+require_stage_state_generation() {
+  local stage="$1"
+  local expected_generation="$2"
+  local state_object="${stage}/default.tfstate"
+  local state_uri="gs://${TF_STATE_BUCKET}/${state_object}"
+  local object_metadata
+  local current_generation
+
+  refresh_adc_token
+  if ! object_metadata="$(gcloud --access-token-file="${adc_token_file}" \
+    storage objects describe "${state_uri}" --format=json 2>/dev/null)"; then
+    die "The exact persisted ${stage} state object became unavailable; refusing Terraform initialization or planning."
+  fi
+  current_generation="$(jq -er --arg object "${state_object}" '
+    select(type == "object" and .name == $object) |
+    .generation |
+    select(type == "string" and test("^[1-9][0-9]*$"))
+  ' <<<"${object_metadata}")" ||
+    die "The exact persisted ${stage} state object metadata is malformed or mismatched."
+  [[ "${current_generation}" == "${expected_generation}" ]] ||
+    die "The persisted ${stage} state changed concurrently. No destroy plan was evaluated; rerun teardown from a fresh state inspection."
+}
+
+read_persisted_stage_state() {
+  local stage="$1"
+  local destination_file="$2"
+  local state_object="${stage}/default.tfstate"
+  local state_uri="gs://${TF_STATE_BUCKET}/${state_object}"
+  local object_inventory
+  local object_count
+
+  PERSISTED_STATE_GENERATION=""
+  refresh_adc_token
+  if ! object_inventory="$(gcloud --access-token-file="${adc_token_file}" \
+    storage objects list "gs://${TF_STATE_BUCKET}/${stage}/**" --format=json 2>/dev/null)"; then
+    die "Could not inspect the exact persisted ${stage} state object; access and API errors are fatal before Terraform initialization."
+  fi
+  jq -e 'type == "array"' <<<"${object_inventory}" >/dev/null ||
+    die "Persisted ${stage} state discovery returned malformed JSON."
+  object_count="$(jq -er --arg object "${state_object}" \
+    '[.[] | select(.name == $object)] | length' <<<"${object_inventory}")" ||
+    die "Persisted ${stage} state discovery could not resolve the exact object."
+  [[ "${object_count}" == "1" ]] ||
+    die "Persisted ${stage} state discovery requires exactly one live ${state_uri}; absence or ambiguity is fatal before Terraform initialization."
+  PERSISTED_STATE_GENERATION="$(jq -er --arg object "${state_object}" '
+    [.[] | select(.name == $object)][0].generation |
+    select(type == "string" and test("^[1-9][0-9]*$"))
+  ' <<<"${object_inventory}")" ||
+    die "Persisted ${stage} state discovery returned an invalid object generation."
+
+  install -m 0600 /dev/null "${destination_file}"
+  refresh_adc_token
+  if ! gcloud --access-token-file="${adc_token_file}" storage cat \
+    "${state_uri}" >"${destination_file}" 2>/dev/null; then
+    die "The exact persisted ${stage} state object exists but could not be read before Terraform initialization."
+  fi
+  chmod 0600 "${destination_file}"
+  validate_terraform_state_snapshot "${destination_file}" "${stage}"
+  require_stage_state_generation "${stage}" "${PERSISTED_STATE_GENERATION}"
+}
+
 terraform_destroy_stage() {
   local stage="$1"
   local terraform_root
   local plan_file
   local plan_summary
-  local state_file
+  local preinit_state_file
+  local postinit_state_file
+  local persisted_generation
   local state_resource_count
+  local state_output_count
+  local preinit_lineage
+  local postinit_lineage
+  local preinit_serial
+  local postinit_serial
+  local preinit_binding_digest
+  local postinit_binding_digest
 
   case "${stage}" in
     platform|foundation) ;;
@@ -900,43 +1043,51 @@ terraform_destroy_stage() {
   esac
   terraform_root="${REPO_ROOT}/infra/${stage}"
   plan_file="${temporary_root}/${stage}-destroy.tfplan"
-  state_file="${temporary_root}/${stage}-remote-state.tfstate"
+  preinit_state_file="${temporary_root}/${stage}-persisted-preinit.tfstate"
+  postinit_state_file="${temporary_root}/${stage}-postinit-pull.tfstate"
+
+  read_persisted_stage_state "${stage}" "${preinit_state_file}"
+  persisted_generation="${PERSISTED_STATE_GENERATION}"
+  state_resource_count="$(jq -er '.resources | length' "${preinit_state_file}")"
+  state_output_count="$(jq -er '.outputs | length' "${preinit_state_file}")"
+  if [[ "${state_resource_count}" == "0" ]]; then
+    [[ "${state_output_count}" == "0" ]] ||
+      die "The persisted ${stage} state has no resources but retains outputs; refusing to classify it as safely destroyed."
+    require_stage_state_generation "${stage}" "${persisted_generation}"
+    printf 'Terraform %s persisted remote state is valid and already empty; skipping init, destroy plan, and apply.\n' "${stage}"
+    rm -f -- "${preinit_state_file}"
+    return 0
+  fi
+
+  preinit_lineage="$(jq -er '.lineage' "${preinit_state_file}")"
+  preinit_serial="$(jq -er '.serial' "${preinit_state_file}")"
+  calculate_terraform_state_binding_digest "${preinit_state_file}"
+  preinit_binding_digest="${TERRAFORM_STATE_BINDING_DIGEST}"
 
   TF_WORKSPACE=default terraform -chdir="${terraform_root}" init -input=false -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${stage}"
-  install -m 0600 /dev/null "${state_file}"
+  install -m 0600 /dev/null "${postinit_state_file}"
   if ! TF_WORKSPACE=default terraform -chdir="${terraform_root}" state pull \
-    >"${state_file}" 2>/dev/null; then
-    die "Could not pull the ${stage} remote state after backend initialization; refusing to infer an empty state or evaluate a destroy plan."
+    >"${postinit_state_file}" 2>/dev/null; then
+    die "Could not pull the pre-existing ${stage} remote state after backend initialization; refusing to evaluate a destroy plan."
   fi
-  chmod 0600 "${state_file}"
-  jq -e '
-    type == "object" and
-    .version == 4 and
-    (.terraform_version | type == "string" and length > 0) and
-    (.serial | type == "number" and . >= 0 and floor == .) and
-    (.lineage | type == "string" and length > 0) and
-    (.outputs | type == "object") and
-    (.resources | type == "array") and
-    all(.resources[];
-      (.mode == "managed" or .mode == "data") and
-      (.type | type == "string" and length > 0) and
-      (.name | type == "string" and length > 0) and
-      (.provider | type == "string" and length > 0) and
-      (.instances | type == "array") and
-      ((has("module") | not) or (.module | type == "string" and length > 0))
-    )
-  ' "${state_file}" >/dev/null ||
-    die "The pulled ${stage} remote state is malformed or ambiguous; recover the state manually before teardown."
-  state_resource_count="$(jq -er '.resources | length' "${state_file}")"
-  if [[ "${state_resource_count}" == "0" ]]; then
-    jq -e '.outputs | length == 0' "${state_file}" >/dev/null ||
-      die "The ${stage} remote state has no resources but retains outputs; refusing to classify it as safely destroyed."
-    printf 'Terraform %s remote state is valid and already empty; skipping destroy plan and apply.\n' "${stage}"
-    rm -f -- "${state_file}"
-    return 0
+  chmod 0600 "${postinit_state_file}"
+  validate_terraform_state_snapshot "${postinit_state_file}" "${stage}"
+  require_stage_state_generation "${stage}" "${persisted_generation}"
+  postinit_lineage="$(jq -er '.lineage' "${postinit_state_file}")"
+  postinit_serial="$(jq -er '.serial' "${postinit_state_file}")"
+  [[ "${postinit_lineage}" == "${preinit_lineage}" ]] ||
+    die "Terraform initialized ${stage} against a different state lineage; refusing to plan from an unbound backend."
+  if ((postinit_serial < preinit_serial)); then
+    die "Terraform returned a regressed ${stage} state serial; refusing to plan from an unbound backend."
   fi
-  rm -f -- "${state_file}"
+  [[ "${postinit_serial}" == "${preinit_serial}" ]] ||
+    die "The persisted ${stage} state changed concurrently after inspection. No destroy plan was evaluated; rerun teardown."
+  calculate_terraform_state_binding_digest "${postinit_state_file}"
+  postinit_binding_digest="${TERRAFORM_STATE_BINDING_DIGEST}"
+  [[ "${postinit_binding_digest}" == "${preinit_binding_digest}" ]] ||
+    die "Terraform's pulled ${stage} state does not canonically match the pre-init persisted snapshot; refusing to plan from an unbound backend."
+  rm -f -- "${preinit_state_file}" "${postinit_state_file}"
 
   TF_WORKSPACE=default terraform -chdir="${terraform_root}" plan -destroy -input=false \
     -var="terraform_state_bucket=${TF_STATE_BUCKET}" -out="${plan_file}" >/dev/null

@@ -51,7 +51,10 @@ jobs:
       - name: Install pinned teardown tools
         run: make tools
       - name: Tear down assessment resources
-        run: ./scripts/teardown.sh --project-id "${{ inputs.project_id }}" --confirmation "${{ inputs.confirmation }}"
+        env:
+          DISPATCHED_PROJECT_ID: ${{ inputs.project_id }}
+          DISPATCHED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: ./scripts/teardown.sh --project-id "${DISPATCHED_PROJECT_ID}" --confirmation "${DISPATCHED_CONFIRMATION}"
       - name: Upload redacted cleanup report
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0

@@ -18,6 +18,7 @@ INVENTORY_FILE=""
 REMOTE_INVENTORY_OBJECT=""
 REMOTE_INVENTORY_URI=""
 REMOTE_INVENTORY_PRESENT="false"
+LOCAL_INVENTORY_PRESENT="false"
 
 usage() {
   cat <<'USAGE'
@@ -84,7 +85,7 @@ else
     die "Teardown may run only from the main branch."
 fi
 
-for command_name in git terraform jq gcloud kubectl sha256sum stat; do
+for command_name in git terraform jq gcloud kubectl sha256sum stat ln; do
   require_command "${command_name}"
 done
 
@@ -495,12 +496,44 @@ ensure_inventory_directory() {
 }
 
 FILE_DIGEST=""
+INVENTORY_IDENTITY_DIGEST=""
 
 calculate_file_digest() {
   local source_file="$1"
 
   read -r FILE_DIGEST _ < <(sha256sum "${source_file}")
   [[ "${FILE_DIGEST}" =~ ^[a-f0-9]{64}$ ]] || die "Could not calculate recovery inventory digest."
+}
+
+calculate_inventory_identity_digest() {
+  local source_file="$1"
+  local canonical_inventory
+
+  canonical_inventory="$(jq -ceS '{
+      version,
+      project_id,
+      state_bucket,
+      mci,
+      resources: (.resources | sort_by(.kind, .scope, .location, .name))
+    }' "${source_file}")" ||
+    die "Could not canonicalize the recovery inventory identity."
+  read -r INVENTORY_IDENTITY_DIGEST _ < <(sha256sum <<<"${canonical_inventory}")
+  [[ "${INVENTORY_IDENTITY_DIGEST}" =~ ^[a-f0-9]{64}$ ]] ||
+    die "Could not calculate the canonical recovery inventory identity digest."
+}
+
+inspect_local_inventory() {
+  LOCAL_INVENTORY_PRESENT="false"
+  if [[ ! -e "${INVENTORY_FILE}" && ! -L "${INVENTORY_FILE}" ]]; then
+    return 0
+  fi
+  [[ -f "${INVENTORY_FILE}" && ! -L "${INVENTORY_FILE}" &&
+    -r "${INVENTORY_FILE}" && -O "${INVENTORY_FILE}" ]] ||
+    die "Local teardown recovery inventory has a suspicious file type or owner; recover it manually before teardown."
+  [[ "$(stat -c '%a' "${INVENTORY_FILE}")" == "600" ]] ||
+    die "Local teardown recovery inventory must have mode 0600."
+  validate_persisted_inventory_contents "${INVENTORY_FILE}"
+  LOCAL_INVENTORY_PRESENT="true"
 }
 
 discover_remote_inventory() {
@@ -530,39 +563,82 @@ discover_remote_inventory() {
   REMOTE_INVENTORY_PRESENT="true"
 }
 
-restore_remote_inventory_if_present() {
-  local remote_digest
-  local restored_digest
+create_local_inventory_without_replacement() {
+  local source_file="$1"
+  local source_digest
+  local installed_digest
 
-  discover_remote_inventory "${remote_inventory_snapshot}"
-  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] || return 0
   ensure_inventory_directory
-  if [[ -e "${INVENTORY_FILE}" || -L "${INVENTORY_FILE}" ]]; then
-    [[ -f "${INVENTORY_FILE}" && ! -L "${INVENTORY_FILE}" && -O "${INVENTORY_FILE}" ]] ||
-      die "Local teardown recovery path has a suspicious file type or owner."
-  fi
-  calculate_file_digest "${remote_inventory_snapshot}"
-  remote_digest="${FILE_DIGEST}"
+  calculate_file_digest "${source_file}"
+  source_digest="${FILE_DIGEST}"
   inventory_candidate="$(mktemp "${INVENTORY_DIR}/teardown-controller-inventory.XXXXXX")"
-  install -m 0600 "${remote_inventory_snapshot}" "${inventory_candidate}"
+  install -m 0600 "${source_file}" "${inventory_candidate}"
   validate_persisted_inventory_contents "${inventory_candidate}"
   calculate_file_digest "${inventory_candidate}"
-  restored_digest="${FILE_DIGEST}"
-  [[ "${restored_digest}" == "${remote_digest}" ]] ||
-    die "Local restoration of durable teardown inventory changed its content."
-  mv -fT -- "${inventory_candidate}" "${INVENTORY_FILE}"
+  installed_digest="${FILE_DIGEST}"
+  [[ "${installed_digest}" == "${source_digest}" ]] ||
+    die "Preparing the local teardown inventory changed its content."
+  if ! ln -- "${inventory_candidate}" "${INVENTORY_FILE}"; then
+    die "Local teardown recovery inventory appeared concurrently; no inventory was replaced. Reconcile the local and durable copies manually before retrying."
+  fi
+  rm -f -- "${inventory_candidate}"
   inventory_candidate=""
-  chmod 0600 "${INVENTORY_FILE}"
+  inspect_local_inventory
+  calculate_file_digest "${INVENTORY_FILE}"
+  [[ "${FILE_DIGEST}" == "${source_digest}" ]] ||
+    die "The newly persisted local teardown inventory differs from its validated source."
 }
 
-confirm_durable_inventory() {
+reconcile_recovery_inventories_at_startup() {
   local local_digest
   local remote_digest
 
+  inspect_local_inventory
+  discover_remote_inventory "${remote_inventory_snapshot}"
+  if [[ "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" == "true:true" ]]; then
+    calculate_file_digest "${INVENTORY_FILE}"
+    local_digest="${FILE_DIGEST}"
+    calculate_file_digest "${remote_inventory_snapshot}"
+    remote_digest="${FILE_DIGEST}"
+    [[ "${local_digest}" == "${remote_digest}" ]] ||
+      die "Local and durable teardown recovery inventories conflict. Neither was replaced; manually establish the authoritative exact inventory before retrying."
+  elif [[ "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" == "false:true" ]]; then
+    create_local_inventory_without_replacement "${remote_inventory_snapshot}"
+  fi
+}
+
+require_matching_local_and_durable_inventory() {
+  local local_digest
+  local remote_digest
+
+  inspect_local_inventory
+  [[ "${LOCAL_INVENTORY_PRESENT}" == "true" ]] ||
+    die "Validated durable recovery requires its exact local counterpart."
+  discover_remote_inventory "${remote_inventory_snapshot}"
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
+    die "The exact durable teardown recovery object is absent; refusing Kubernetes or Terraform mutation."
   calculate_file_digest "${INVENTORY_FILE}"
   local_digest="${FILE_DIGEST}"
-  if ! gcloud storage cp "${INVENTORY_FILE}" "${REMOTE_INVENTORY_URI}" --quiet >/dev/null; then
-    die "Could not upload durable teardown recovery inventory; no Kubernetes mutation was attempted."
+  calculate_file_digest "${remote_inventory_snapshot}"
+  remote_digest="${FILE_DIGEST}"
+  [[ "${local_digest}" == "${remote_digest}" ]] ||
+    die "Local and durable teardown recovery inventories changed or conflict. Neither was replaced; manually establish the authoritative exact inventory before retrying."
+}
+
+create_durable_inventory_without_replacement() {
+  local local_digest
+  local remote_digest
+
+  inspect_local_inventory
+  [[ "${LOCAL_INVENTORY_PRESENT}" == "true" ]] ||
+    die "Internal error: no validated local inventory is available for durable persistence."
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "false" ]] ||
+    die "Refusing to replace an existing durable teardown recovery inventory."
+  calculate_file_digest "${INVENTORY_FILE}"
+  local_digest="${FILE_DIGEST}"
+  if ! gcloud storage cp "${INVENTORY_FILE}" "${REMOTE_INVENTORY_URI}" \
+    --if-generation-match=0 --quiet >/dev/null 2>&1; then
+    die "Could not create the durable teardown recovery inventory without replacement. No Kubernetes mutation was attempted; inspect and reconcile any concurrently created object before retrying."
   fi
   discover_remote_inventory "${remote_inventory_snapshot}"
   [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
@@ -573,13 +649,12 @@ confirm_durable_inventory() {
     die "Durable teardown recovery inventory digest differs from the validated local inventory."
 }
 
-persist_preflighted_inventory() {
+build_preflighted_inventory() {
   local inventory_tsv="$1"
   local mci_uid="$2"
+  local destination_file="$3"
 
-  ensure_inventory_directory
-  inventory_candidate="$(mktemp "${INVENTORY_DIR}/teardown-controller-inventory.XXXXXX")"
-  chmod 0600 "${inventory_candidate}"
+  install -m 0600 /dev/null "${destination_file}"
   jq -Rn --arg project "${PROJECT_ID}" --arg bucket "${TF_STATE_BUCKET}" \
     --arg namespace "${MCI_NAMESPACE}" \
     --arg name "${MCI_NAME}" --arg uid "${mci_uid}" \
@@ -595,24 +670,39 @@ persist_preflighted_inventory() {
         mci: {namespace: $namespace, name: $name, uid: $uid},
         resources: .
       }
-    ' <"${inventory_tsv}" >"${inventory_candidate}"
-  chmod 0600 "${inventory_candidate}"
-  validate_persisted_inventory_contents "${inventory_candidate}"
-  mv -fT -- "${inventory_candidate}" "${INVENTORY_FILE}"
-  inventory_candidate=""
-  chmod 0600 "${INVENTORY_FILE}"
-  confirm_durable_inventory
+    ' <"${inventory_tsv}" >"${destination_file}"
+  chmod 0600 "${destination_file}"
+  validate_persisted_inventory_contents "${destination_file}"
 }
 
-load_persisted_inventory() {
-  [[ -e "${INVENTORY_FILE}" || -L "${INVENTORY_FILE}" ]] ||
-    die "MultiClusterIngress is absent and no persisted controller inventory exists. Restore the MCI or recover its exact cloud resource inventory before teardown."
-  [[ -f "${INVENTORY_FILE}" && ! -L "${INVENTORY_FILE}" &&
-    -r "${INVENTORY_FILE}" && -O "${INVENTORY_FILE}" ]] ||
-    die "Persisted teardown inventory has a suspicious file type or owner; recover it manually before teardown."
-  [[ "$(stat -c '%a' "${INVENTORY_FILE}")" == "600" ]] ||
-    die "Persisted teardown inventory must have mode 0600."
-  validate_persisted_inventory_contents "${INVENTORY_FILE}"
+persist_preflighted_inventory() {
+  local inventory_tsv="$1"
+  local mci_uid="$2"
+  local live_candidate="${temporary_root}/live-controller-inventory.json"
+  local existing_identity_digest
+  local candidate_identity_digest
+
+  build_preflighted_inventory "${inventory_tsv}" "${mci_uid}" "${live_candidate}"
+  calculate_inventory_identity_digest "${live_candidate}"
+  candidate_identity_digest="${INVENTORY_IDENTITY_DIGEST}"
+
+  if [[ "${LOCAL_INVENTORY_PRESENT}" == "true" ]]; then
+    calculate_inventory_identity_digest "${INVENTORY_FILE}"
+    existing_identity_digest="${INVENTORY_IDENTITY_DIGEST}"
+    [[ "${existing_identity_digest}" == "${candidate_identity_digest}" ]] ||
+      die "The live MultiClusterIngress UID or exact controller resource set conflicts with the existing recovery inventory. Neither copy was replaced; manually reconcile the authoritative inventory before retrying."
+    if [[ "${REMOTE_INVENTORY_PRESENT}" == "false" ]]; then
+      create_durable_inventory_without_replacement
+    else
+      require_matching_local_and_durable_inventory
+    fi
+    return 0
+  fi
+
+  [[ "${REMOTE_INVENTORY_PRESENT}" == "false" ]] ||
+    die "Internal error: durable recovery inventory exists without its validated local counterpart."
+  create_local_inventory_without_replacement "${live_candidate}"
+  create_durable_inventory_without_replacement
 }
 
 audit_persisted_inventory_access() {
@@ -685,7 +775,7 @@ inspect_cluster_existence() {
 require_durable_inventory() {
   [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]] ||
     die "The primary cluster or MultiClusterIngress is absent without validated durable recovery inventory at ${REMOTE_INVENTORY_URI}. Restore the cluster/MCI or recover and upload the exact inventory before teardown."
-  load_persisted_inventory
+  require_matching_local_and_durable_inventory
 }
 
 remove_recovery_inventories() {
@@ -698,11 +788,13 @@ remove_recovery_inventories() {
   REMOTE_INVENTORY_PRESENT="false"
 }
 
-restore_remote_inventory_if_present
-if [[ "${REMOTE_INVENTORY_PRESENT}" == "true" ]]; then
-  printf '%s\n' 'Validated durable teardown recovery inventory before cluster discovery.'
+reconcile_recovery_inventories_at_startup
+if [[ "${LOCAL_INVENTORY_PRESENT}:${REMOTE_INVENTORY_PRESENT}" == "true:true" ]]; then
+  printf '%s\n' 'Validated matching local and durable teardown recovery inventories before cluster discovery.'
+elif [[ "${LOCAL_INVENTORY_PRESENT}" == "true" ]]; then
+  printf '%s\n' 'Validated local-only teardown recovery inventory; a matching live MCI is required before durable creation.'
 else
-  printf '%s\n' 'No durable teardown recovery inventory exists; a live MCI must be fully preflighted before mutation.'
+  printf '%s\n' 'No teardown recovery inventory exists; a live MCI must be fully preflighted before mutation.'
 fi
 
 inspect_cluster_existence "${PRIMARY_CLUSTER}" "${PRIMARY_REGION}"
@@ -735,7 +827,7 @@ if [[ "${primary_cluster_present}" == "true" ]]; then
     deduplicate_inventory "${enriched_inventory}" "${controller_inventory}"
     preflight_inventory "${controller_inventory}"
     persist_preflighted_inventory "${controller_inventory}" "${mci_uid}"
-    printf '%s\n' 'Persisted and read-back-verified the exact controller inventory before Kubernetes deletion.'
+    printf '%s\n' 'Validated an exact, conflict-free local and durable controller inventory before Kubernetes deletion.'
   else
     require_durable_inventory
     printf '%s\n' 'MultiClusterIngress is already absent; resuming from durable recovery inventory.'
@@ -799,6 +891,8 @@ terraform_destroy_stage() {
   local terraform_root
   local plan_file
   local plan_summary
+  local state_file
+  local state_resource_count
 
   case "${stage}" in
     platform|foundation) ;;
@@ -806,13 +900,48 @@ terraform_destroy_stage() {
   esac
   terraform_root="${REPO_ROOT}/infra/${stage}"
   plan_file="${temporary_root}/${stage}-destroy.tfplan"
+  state_file="${temporary_root}/${stage}-remote-state.tfstate"
 
-  terraform -chdir="${terraform_root}" init -input=false -reconfigure \
+  TF_WORKSPACE=default terraform -chdir="${terraform_root}" init -input=false -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=${stage}"
-  terraform -chdir="${terraform_root}" plan -destroy -input=false \
+  install -m 0600 /dev/null "${state_file}"
+  if ! TF_WORKSPACE=default terraform -chdir="${terraform_root}" state pull \
+    >"${state_file}" 2>/dev/null; then
+    die "Could not pull the ${stage} remote state after backend initialization; refusing to infer an empty state or evaluate a destroy plan."
+  fi
+  chmod 0600 "${state_file}"
+  jq -e '
+    type == "object" and
+    .version == 4 and
+    (.terraform_version | type == "string" and length > 0) and
+    (.serial | type == "number" and . >= 0 and floor == .) and
+    (.lineage | type == "string" and length > 0) and
+    (.outputs | type == "object") and
+    (.resources | type == "array") and
+    all(.resources[];
+      (.mode == "managed" or .mode == "data") and
+      (.type | type == "string" and length > 0) and
+      (.name | type == "string" and length > 0) and
+      (.provider | type == "string" and length > 0) and
+      (.instances | type == "array") and
+      ((has("module") | not) or (.module | type == "string" and length > 0))
+    )
+  ' "${state_file}" >/dev/null ||
+    die "The pulled ${stage} remote state is malformed or ambiguous; recover the state manually before teardown."
+  state_resource_count="$(jq -er '.resources | length' "${state_file}")"
+  if [[ "${state_resource_count}" == "0" ]]; then
+    jq -e '.outputs | length == 0' "${state_file}" >/dev/null ||
+      die "The ${stage} remote state has no resources but retains outputs; refusing to classify it as safely destroyed."
+    printf 'Terraform %s remote state is valid and already empty; skipping destroy plan and apply.\n' "${stage}"
+    rm -f -- "${state_file}"
+    return 0
+  fi
+  rm -f -- "${state_file}"
+
+  TF_WORKSPACE=default terraform -chdir="${terraform_root}" plan -destroy -input=false \
     -var="terraform_state_bucket=${TF_STATE_BUCKET}" -out="${plan_file}" >/dev/null
   chmod 0600 "${plan_file}"
-  plan_summary="$(terraform -chdir="${terraform_root}" show -json "${plan_file}" |
+  plan_summary="$(TF_WORKSPACE=default terraform -chdir="${terraform_root}" show -json "${plan_file}" |
     jq -r '.resource_changes[]? |
       select(.change.actions != ["no-op"]) |
       [.address, (.change.actions | join(","))] | @tsv')"
@@ -822,7 +951,7 @@ terraform_destroy_stage() {
   else
     printf '%s\n' 'No resource changes.'
   fi
-  terraform -chdir="${terraform_root}" apply -input=false -auto-approve "${plan_file}"
+  TF_WORKSPACE=default terraform -chdir="${terraform_root}" apply -input=false -auto-approve "${plan_file}"
   rm -f -- "${plan_file}"
 }
 

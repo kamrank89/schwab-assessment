@@ -1,0 +1,257 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "gcp-bigquery"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "gcp-bigquery"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "location": "US",
+          "project": "${GCP_PROJECT_ID}",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  TIMESTAMP_TRUNC(timestamp, MINUTE) AS time,\n  CAST(httpRequest.status AS STRING) AS status,\n  COUNT(*) AS requests\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\nGROUP BY time, status\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Traffic by HTTP status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "gcp-bigquery"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": false
+        },
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "gcp-bigquery"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "location": "US",
+          "project": "${GCP_PROJECT_ID}",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COALESCE(REGEXP_EXTRACT(httpRequest.requestUrl, r'https?://[^/]+([^?]*)'), '/') AS request_path,\n  COUNT(*) AS requests\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND httpRequest.requestUrl IS NOT NULL\nGROUP BY request_path\nORDER BY requests DESC\nLIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "title": "Top request paths",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "gcp-bigquery"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 10,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "gcp-bigquery"
+          },
+          "editorMode": "code",
+          "format": 1,
+          "location": "US",
+          "project": "${GCP_PROJECT_ID}",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  timestamp,\n  httpRequest.status AS status,\n  httpRequest.requestMethod AS method,\n  httpRequest.requestUrl AS url,\n  httpRequest.remoteIp AS remote_ip,\n  COALESCE(textPayload, TO_JSON_STRING(jsonPayload)) AS log_message\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND httpRequest.status BETWEEN 500 AND 599\nORDER BY timestamp DESC\nLIMIT 100",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent 5xx request logs",
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 42,
+  "tags": [
+    "assessment",
+    "bigquery",
+    "traffic",
+    "logs"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Traffic and log analysis",
+  "uid": "traffic-log-analysis",
+  "version": 1,
+  "weekStart": ""
+}

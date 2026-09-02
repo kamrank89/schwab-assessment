@@ -1,0 +1,7 @@
+apiVersion: networking.gke.io/v1
+kind: MultiClusterIngress
+metadata:
+  annotations:
+    networking.gke.io/pre-shared-certs: TLS_CERTIFICATE_NAME
+  name: assessment-ingress
+  namespace: assessment

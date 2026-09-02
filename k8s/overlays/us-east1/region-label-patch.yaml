@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    assessment.schwab/region: us-east1
+  name: app-a
+  namespace: assessment
+spec:
+  template:
+    metadata:
+      labels:
+        assessment.schwab/region: us-east1
+    spec:
+      containers:
+        - env:
+            - name: ASSESSMENT_REGION
+              value: us-east1
+          name: app-a
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    assessment.schwab/region: us-east1
+  name: app-b
+  namespace: assessment
+spec:
+  template:
+    metadata:
+      labels:
+        assessment.schwab/region: us-east1

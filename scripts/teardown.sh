@@ -958,12 +958,14 @@ remove_recovery_inventories() {
   require_matching_local_and_durable_inventory
   expected_generation="${REMOTE_INVENTORY_GENERATION}"
   refresh_adc_token
+  # Remove the cache before the conditional remote delete. An ambiguous remote
+  # result then leaves either a durable copy that can restore it or the active marker.
+  rm -f -- "${INVENTORY_FILE}"
   if ! gcloud --access-token-file="${adc_token_file}" storage rm \
     "${REMOTE_INVENTORY_URI}" --if-generation-match="${expected_generation}" \
     --quiet >/dev/null; then
-    die "Teardown completed but the exact durable recovery object could not be removed; the local copy was retained."
+    die "Could not confirm generation-bound durable recovery inventory removal after its local cache was removed. Retry: a retained live generation will restore the cache; an already-completed deletion will use the completion-bound path."
   fi
-  rm -f -- "${INVENTORY_FILE}"
   discover_remote_inventory "${remote_inventory_snapshot}"
   [[ "${REMOTE_INVENTORY_PRESENT}" == "false" ]] ||
     die "A new live controller recovery inventory appeared after generation-bound removal; teardown completion was not reported."

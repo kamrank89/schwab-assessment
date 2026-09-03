@@ -94,11 +94,14 @@ validate_environment() {
   require_environment GCP_PROJECT_ID
   require_environment GCP_PROJECT_NUMBER
   require_environment GCP_DEPLOYER_SERVICE_ACCOUNT
+  require_environment GCP_CLUSTER_ADMIN_EMAIL
   require_environment TF_STATE_BUCKET
   require_environment GCP_ENABLE_HTTPS
 
   [[ "${GCP_PROJECT_ID}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "Invalid GCP_PROJECT_ID."
   [[ "${GCP_PROJECT_NUMBER}" =~ ^[1-9][0-9]{5,19}$ ]] || die "Invalid GCP_PROJECT_NUMBER."
+  [[ "${GCP_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
+    die "Invalid GCP_CLUSTER_ADMIN_EMAIL."
   [[ "${TF_STATE_BUCKET}" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] || die "Invalid TF_STATE_BUCKET."
   [[ "${GCP_ENABLE_HTTPS}" == "true" || "${GCP_ENABLE_HTTPS}" == "false" ]] ||
     die "GCP_ENABLE_HTTPS must be true or false."
@@ -126,6 +129,7 @@ get_gateway_credentials() {
 }
 
 platform_json=""
+cluster_admin_email=""
 global_ipv4_address=""
 bigquery_dataset=""
 cloud_armor_policy_name=""
@@ -148,6 +152,11 @@ initialize_context() {
   terraform -chdir="${REPO_ROOT}/infra/platform" init -input=false -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=platform" >/dev/null
   platform_json="$(terraform -chdir="${REPO_ROOT}/infra/platform" output -json)"
+  cluster_admin_email="$(jq -er '.cluster_admin_email.value |
+    select(type == "string" and test("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"))' \
+    <<<"${platform_json}")" || die "Platform cluster administrator email output is missing or invalid."
+  [[ "${cluster_admin_email}" == "${GCP_CLUSTER_ADMIN_EMAIL,,}" ]] ||
+    die "Platform cluster administrator email differs from GCP_CLUSTER_ADMIN_EMAIL."
   app_a_gsa_email="$(jq -er '.app_a_runtime_gsa_email.value' <<<"${platform_json}")"
   grafana_gsa_email="$(jq -er '.grafana_runtime_gsa_email.value' <<<"${platform_json}")"
   global_ipv4_address="$(jq -er '.global_ipv4_address.value' <<<"${platform_json}")"
@@ -159,6 +168,7 @@ initialize_context() {
     --project-id "${GCP_PROJECT_ID}" \
     --project-number "${GCP_PROJECT_NUMBER}" \
     --deployer-email "${GCP_DEPLOYER_SERVICE_ACCOUNT}" \
+    --cluster-admin-email "${cluster_admin_email}" \
     --app-a-gsa-email "${app_a_gsa_email}" \
     --grafana-gsa-email "${grafana_gsa_email}" \
     --global-ipv4-address "${global_ipv4_address}" \
@@ -172,6 +182,55 @@ initialize_context() {
   get_gateway_credentials "${PRIMARY_CLUSTER}" "${gateway_primary}"
   get_gateway_credentials "${SECONDARY_CLUSTER}" "${gateway_secondary}"
   get_gateway_credentials "${PRIMARY_CLUSTER}" "${gateway_config}"
+}
+
+verify_cluster_access_configuration() {
+  local cluster
+  local kubeconfig
+  local binding_json
+  local impersonation_role_json
+
+  for cluster in "${PRIMARY_CLUSTER}" "${SECONDARY_CLUSTER}"; do
+    if [[ "${cluster}" == "${PRIMARY_CLUSTER}" ]]; then
+      kubeconfig="${gateway_primary}"
+    else
+      kubeconfig="${gateway_secondary}"
+    fi
+
+    binding_json="$(KUBECONFIG="${kubeconfig}" kubectl get \
+      clusterrolebinding/assessment-operator-cluster-admin -o json)" ||
+      die "Could not inspect the operator cluster administrator binding in ${cluster}."
+    jq -e --arg operator "${cluster_admin_email}" '
+      (.subjects | type) == "array" and
+      (.subjects | length) == 1 and
+      .subjects[0].kind == "User" and
+      .subjects[0].name == $operator and
+      .roleRef.name == "cluster-admin"
+    ' <<<"${binding_json}" >/dev/null ||
+      die "Operator cluster administrator binding differs from the configured access in ${cluster}."
+
+    impersonation_role_json="$(KUBECONFIG="${kubeconfig}" kubectl get \
+      clusterrole/assessment-deployer-gateway-impersonation -o json)" ||
+      die "Could not inspect the Gateway impersonation role in ${cluster}."
+    jq -e --arg deployer "${GCP_DEPLOYER_SERVICE_ACCOUNT}" \
+      --arg operator "${cluster_admin_email}" '
+      (.rules | type) == "array" and
+      any(.rules[];
+        (.apiGroups | type) == "array" and
+        (.apiGroups | index("")) != null and
+        (.resources | type) == "array" and
+        (.resources | index("users")) != null and
+        (.verbs | type) == "array" and
+        (.verbs | index("impersonate")) != null and
+        (.resourceNames | type) == "array" and
+        (.resourceNames | index($deployer)) != null and
+        (.resourceNames | index($operator)) != null
+      )
+    ' <<<"${impersonation_role_json}" >/dev/null ||
+      die "Gateway impersonation role differs from the configured access in ${cluster}."
+
+    record "cluster=${cluster} operator_cluster_admin=configured gateway_impersonation=configured"
+  done
 }
 
 initialize_report() {
@@ -395,6 +454,7 @@ smoke_verification() {
 
   initialize_context
   initialize_report smoke
+  verify_cluster_access_configuration
 
   for region in "${PRIMARY_REGION}" "${SECONDARY_REGION}"; do
     if [[ "${region}" == "${PRIMARY_REGION}" ]]; then
@@ -512,6 +572,7 @@ hpa_drill() {
   [[ "${confirmation}" == "HPA ${region}" ]] || die "HPA confirmation must be exactly: HPA ${region}"
   initialize_context
   initialize_report hpa
+  verify_cluster_access_configuration
   kubeconfig="$(kubeconfig_for_region "${region}")"
   RESTORE_KUBECONFIG="${kubeconfig}"
   RESTORE_OVERLAY="$(overlay_for_region "${region}")"
@@ -575,6 +636,7 @@ failover_drill() {
     die "Failover confirmation must be exactly: FAILOVER ${region}"
   initialize_context
   initialize_report failover
+  verify_cluster_access_configuration
   target_kubeconfig="$(kubeconfig_for_region "${region}")"
   if [[ "${region}" == "${PRIMARY_REGION}" ]]; then
     remaining_kubeconfig="${gateway_secondary}"

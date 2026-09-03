@@ -30,6 +30,8 @@ jobs:
       GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
       GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
       GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      GCP_CLUSTER_ADMIN_EMAIL: ${{ vars.GCP_CLUSTER_ADMIN_EMAIL }}
+      TF_VAR_cluster_admin_email: ${{ vars.GCP_CLUSTER_ADMIN_EMAIL }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
       - name: Check out repository

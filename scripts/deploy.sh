@@ -19,7 +19,7 @@ usage() {
 Usage: deploy.sh foundation|platform|workloads|https-to-http
 
 Required environment variables:
-  GCP_PROJECT_ID GCP_PROJECT_NUMBER GCP_DEPLOYER_SERVICE_ACCOUNT
+  GCP_PROJECT_ID GCP_PROJECT_NUMBER GCP_DEPLOYER_SERVICE_ACCOUNT GCP_CLUSTER_ADMIN_EMAIL
   TF_STATE_BUCKET GCP_REGION_PRIMARY GCP_REGION_SECONDARY
   GCP_ENABLE_HTTPS GCP_MANAGE_DNS GCP_CREATE_DNS_ZONE
   GCP_DNS_NAME GCP_DNS_ZONE_NAME GCP_DNS_ZONE_DNS_NAME
@@ -42,6 +42,7 @@ require_environment() {
 
 validate_common_environment() {
   require_environment GCP_PROJECT_ID
+  require_environment GCP_CLUSTER_ADMIN_EMAIL
   require_environment TF_STATE_BUCKET
   require_environment GCP_REGION_PRIMARY
   require_environment GCP_REGION_SECONDARY
@@ -50,6 +51,8 @@ validate_common_environment() {
   require_environment GCP_CREATE_DNS_ZONE
 
   [[ "${GCP_PROJECT_ID}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "Invalid GCP_PROJECT_ID."
+  [[ "${GCP_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
+    die "Invalid GCP_CLUSTER_ADMIN_EMAIL."
   [[ "${TF_STATE_BUCKET}" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] || die "Invalid TF_STATE_BUCKET."
   [[ "${GCP_REGION_PRIMARY}" == "${PRIMARY_REGION}" ]] || die "GCP_REGION_PRIMARY must be ${PRIMARY_REGION}."
   [[ "${GCP_REGION_SECONDARY}" == "${SECONDARY_REGION}" ]] || die "GCP_REGION_SECONDARY must be ${SECONDARY_REGION}."
@@ -106,6 +109,7 @@ terraform_deploy() {
   variable_arguments=(-var="terraform_state_bucket=${TF_STATE_BUCKET}")
   if [[ "${stage}" == "foundation" ]]; then
     variable_arguments+=(
+      -var="cluster_admin_email=${GCP_CLUSTER_ADMIN_EMAIL}"
       -var="enable_https=${GCP_ENABLE_HTTPS}"
       -var="manage_dns=${GCP_MANAGE_DNS}"
       -var="create_dns_zone=${GCP_CREATE_DNS_ZONE}"
@@ -362,6 +366,7 @@ transition_https_to_http() {
   local platform_json
   local app_a_gsa_email
   local grafana_gsa_email
+  local cluster_admin_email
   local global_ipv4_address
   local cloud_armor_policy_name
   local bigquery_dataset
@@ -394,6 +399,11 @@ transition_https_to_http() {
   terraform -chdir="${REPO_ROOT}/infra/platform" init -input=false -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=platform" >/dev/null
   platform_json="$(terraform -chdir="${REPO_ROOT}/infra/platform" output -json)"
+  cluster_admin_email="$(jq -er '.cluster_admin_email.value |
+    select(type == "string" and test("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"))' \
+    <<<"${platform_json}")" || die "Platform cluster administrator email output is missing or invalid."
+  [[ "${cluster_admin_email}" == "${GCP_CLUSTER_ADMIN_EMAIL,,}" ]] ||
+    die "Platform cluster administrator email differs from GCP_CLUSTER_ADMIN_EMAIL."
   app_a_gsa_email="$(jq -er '.app_a_runtime_gsa_email.value' <<<"${platform_json}")"
   grafana_gsa_email="$(jq -er '.grafana_runtime_gsa_email.value' <<<"${platform_json}")"
   global_ipv4_address="$(jq -er '.global_ipv4_address.value' <<<"${platform_json}")"
@@ -410,6 +420,7 @@ transition_https_to_http() {
     --project-id "${GCP_PROJECT_ID}" \
     --project-number "${GCP_PROJECT_NUMBER}" \
     --deployer-email "${GCP_DEPLOYER_SERVICE_ACCOUNT}" \
+    --cluster-admin-email "${cluster_admin_email}" \
     --app-a-gsa-email "${app_a_gsa_email}" \
     --grafana-gsa-email "${grafana_gsa_email}" \
     --global-ipv4-address "${global_ipv4_address}" \
@@ -431,6 +442,7 @@ deploy_workloads() {
   local platform_json
   local app_a_gsa_email
   local grafana_gsa_email
+  local cluster_admin_email
   local global_ipv4_address
   local cloud_armor_policy_name
   local bigquery_dataset
@@ -457,6 +469,11 @@ deploy_workloads() {
   terraform -chdir="${REPO_ROOT}/infra/platform" init -input=false -reconfigure \
     -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="prefix=platform" >/dev/null
   platform_json="$(terraform -chdir="${REPO_ROOT}/infra/platform" output -json)"
+  cluster_admin_email="$(jq -er '.cluster_admin_email.value |
+    select(type == "string" and test("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"))' \
+    <<<"${platform_json}")" || die "Platform cluster administrator email output is missing or invalid."
+  [[ "${cluster_admin_email}" == "${GCP_CLUSTER_ADMIN_EMAIL,,}" ]] ||
+    die "Platform cluster administrator email differs from GCP_CLUSTER_ADMIN_EMAIL."
   app_a_gsa_email="$(jq -er '.app_a_runtime_gsa_email.value' <<<"${platform_json}")"
   grafana_gsa_email="$(jq -er '.grafana_runtime_gsa_email.value' <<<"${platform_json}")"
   global_ipv4_address="$(jq -er '.global_ipv4_address.value' <<<"${platform_json}")"
@@ -473,6 +490,7 @@ deploy_workloads() {
     --project-id "${GCP_PROJECT_ID}" \
     --project-number "${GCP_PROJECT_NUMBER}" \
     --deployer-email "${GCP_DEPLOYER_SERVICE_ACCOUNT}" \
+    --cluster-admin-email "${cluster_admin_email}" \
     --app-a-gsa-email "${app_a_gsa_email}" \
     --grafana-gsa-email "${grafana_gsa_email}" \
     --global-ipv4-address "${global_ipv4_address}" \

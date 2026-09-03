@@ -1105,6 +1105,7 @@ else
     KUBECONFIG="${dns_secondary}" kubectl delete \
       clusterrole/assessment-deployer-gateway-impersonation \
       clusterrolebinding/assessment-deployer-gateway-impersonation \
+      clusterrolebinding/assessment-operator-cluster-admin \
       --ignore-not-found --wait=true --timeout=5m
   else
     printf '%s\n' 'Secondary cluster is absent; its Kubernetes resources are already removed.'
@@ -1115,6 +1116,7 @@ else
     KUBECONFIG="${dns_primary}" kubectl delete \
       clusterrole/assessment-deployer-gateway-impersonation \
       clusterrolebinding/assessment-deployer-gateway-impersonation \
+      clusterrolebinding/assessment-operator-cluster-admin \
       --ignore-not-found --wait=true --timeout=5m
   fi
 fi

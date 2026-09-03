@@ -22,18 +22,6 @@ resource "google_service_account" "gke_nodes" {
   description  = "Dedicated node identity for the assessment Autopilot clusters"
 }
 
-resource "google_service_account_iam_member" "app_a_workload_identity" {
-  service_account_id = google_service_account.app_a.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${local.project_id}.svc.id.goog[assessment/app-a]"
-}
-
-resource "google_service_account_iam_member" "grafana_workload_identity" {
-  service_account_id = google_service_account.grafana.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${local.project_id}.svc.id.goog[observability/grafana]"
-}
-
 resource "google_secret_manager_secret_iam_member" "app_a" {
   project   = local.project_id
   secret_id = google_secret_manager_secret.app_a.secret_id

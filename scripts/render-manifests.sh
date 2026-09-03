@@ -14,6 +14,7 @@ Usage: render-manifests.sh \
   --deployer-email EMAIL --app-a-gsa-email EMAIL \
   --grafana-gsa-email EMAIL --global-ipv4-address ADDRESS \
   --cloud-armor-policy-name NAME --bigquery-dataset DATASET \
+  --cluster-admin-email EMAIL \
   [--tls-certificate-name NAME]
 
 Renders the approved Kubernetes tokens into .generated/k8s.
@@ -35,6 +36,7 @@ require_value() {
 GCP_PROJECT_ID=""
 GCP_PROJECT_NUMBER=""
 ASSESSMENT_DEPLOYER_EMAIL=""
+ASSESSMENT_CLUSTER_ADMIN_EMAIL=""
 APP_A_GSA_EMAIL=""
 GRAFANA_GSA_EMAIL=""
 GLOBAL_IPV4_ADDRESS=""
@@ -57,6 +59,11 @@ while (($# > 0)); do
     --deployer-email)
       require_value "$1" "${2-}"
       ASSESSMENT_DEPLOYER_EMAIL="$2"
+      shift 2
+      ;;
+    --cluster-admin-email)
+      require_value "$1" "${2-}"
+      ASSESSMENT_CLUSTER_ADMIN_EMAIL="$2"
       shift 2
       ;;
     --app-a-gsa-email)
@@ -106,6 +113,9 @@ done
   die "--project-number must be a numeric Google Cloud project number."
 [[ "${ASSESSMENT_DEPLOYER_EMAIL}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$ ]] ||
   die "--deployer-email is not a valid service-account email."
+[[ "${ASSESSMENT_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
+  die "--cluster-admin-email is not a valid Google user email."
+ASSESSMENT_CLUSTER_ADMIN_EMAIL="${ASSESSMENT_CLUSTER_ADMIN_EMAIL,,}"
 [[ "${APP_A_GSA_EMAIL}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$ ]] ||
   die "--app-a-gsa-email is not a valid service-account email."
 [[ "${GRAFANA_GSA_EMAIL}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$ ]] ||
@@ -152,6 +162,7 @@ find "${temporary_dir}" -type f -exec sed -i \
   -e "s|\${GCP_PROJECT_ID}|${GCP_PROJECT_ID}|g" \
   -e "s|\${GCP_PROJECT_NUMBER}|${GCP_PROJECT_NUMBER}|g" \
   -e "s|\${ASSESSMENT_DEPLOYER_EMAIL}|${ASSESSMENT_DEPLOYER_EMAIL}|g" \
+  -e "s|\${ASSESSMENT_CLUSTER_ADMIN_EMAIL}|${ASSESSMENT_CLUSTER_ADMIN_EMAIL}|g" \
   -e "s|\${APP_A_GSA_EMAIL}|${APP_A_GSA_EMAIL}|g" \
   -e "s|\${GRAFANA_GSA_EMAIL}|${GRAFANA_GSA_EMAIL}|g" \
   -e "s|\${BIGQUERY_DATASET}|${BIGQUERY_DATASET}|g" \

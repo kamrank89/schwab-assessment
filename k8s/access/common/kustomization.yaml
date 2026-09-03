@@ -5,3 +5,4 @@ resources:
   - assessment-role.yaml
   - assessment-rolebinding.yaml
   - gateway-impersonation.yaml
+  - operator-cluster-admin.yaml

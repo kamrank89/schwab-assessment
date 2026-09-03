@@ -215,17 +215,18 @@ verify_cluster_access_configuration() {
     jq -e --arg deployer "${GCP_DEPLOYER_SERVICE_ACCOUNT}" \
       --arg operator "${cluster_admin_email}" '
       (.rules | type) == "array" and
-      any(.rules[];
-        (.apiGroups | type) == "array" and
-        (.apiGroups | index("")) != null and
-        (.resources | type) == "array" and
-        (.resources | index("users")) != null and
-        (.verbs | type) == "array" and
-        (.verbs | index("impersonate")) != null and
-        (.resourceNames | type) == "array" and
-        (.resourceNames | index($deployer)) != null and
-        (.resourceNames | index($operator)) != null
-      )
+      ([.rules[] |
+        select(
+          (.apiGroups | type) == "array" and
+          (((.apiGroups | index("")) != null) or ((.apiGroups | index("*")) != null)) and
+          (.resources | type) == "array" and
+          (((.resources | index("users")) != null) or ((.resources | index("*")) != null)) and
+          (.verbs | type) == "array" and
+          (((.verbs | index("impersonate")) != null) or ((.verbs | index("*")) != null))
+        )] | . as $user_impersonation_rules |
+        ($user_impersonation_rules | length) == 1 and
+        ($user_impersonation_rules[0].resourceNames | type) == "array" and
+        (($user_impersonation_rules[0].resourceNames | sort) == ([$deployer, $operator] | sort)))
     ' <<<"${impersonation_role_json}" >/dev/null ||
       die "Gateway impersonation role differs from the configured access in ${cluster}."
 

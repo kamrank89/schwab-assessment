@@ -10,6 +10,7 @@ OUTPUT_DIR="${REPO_ROOT}/.generated"
 OUTPUT_FILE="${OUTPUT_DIR}/bootstrap-outputs.json"
 BACKEND_FILE="${BOOTSTRAP_ROOT}/backend.generated.tf"
 LOCAL_STATE_FILE="${BOOTSTRAP_ROOT}/terraform.tfstate"
+LOCAL_STATE_BACKUP_FILE="${BOOTSTRAP_ROOT}/terraform.tfstate.backup"
 ERRORED_STATE_FILE="${BOOTSTRAP_ROOT}/errored.tfstate"
 LOCAL_WORKSPACE_STATE_DIR="${BOOTSTRAP_ROOT}/terraform.tfstate.d"
 REMOTE_STATE_OBJECT="bootstrap/default.tfstate"
@@ -39,8 +40,12 @@ require_value() {
 
 LOCAL_STATE_KIND="absent"
 LOCAL_STATE_FINGERPRINT=""
+LOCAL_STATE_PAYLOAD_FINGERPRINT=""
+LOCAL_STATE_SERIAL=""
 REMOTE_STATE_KIND="absent"
 REMOTE_STATE_FINGERPRINT=""
+REMOTE_STATE_PAYLOAD_FINGERPRINT=""
+REMOTE_STATE_SERIAL=""
 REMOTE_BUCKET_PRESENT="false"
 remote_state_snapshot=""
 adc_token_file=""
@@ -153,7 +158,7 @@ validate_managed_state_contract() {
       all(.resources[];
         (.module? == null) and
         .provider == "provider[\"registry.terraform.io/hashicorp/google\"]" and
-        ([.mode, .type, .name] as $signature | ($allowed | index($signature)) != null) and
+        ([.mode, .type, .name] as $signature | any($allowed[]; . == $signature)) and
         (.instances | type == "array" and length > 0) and
         all(.instances[];
           (.attributes | type == "object") and
@@ -237,7 +242,8 @@ validate_managed_state_contract() {
             .index_key == $a.role and
             ($project_roles | index($a.role)) != null
           elif $type == "google_storage_bucket_iam_member" and $name == "pipeline" then
-            $a.bucket == $bucket and $a.member == ("serviceAccount:" + $pipeline_email) and
+            ($a.bucket == $bucket or $a.bucket == ("b/" + $bucket)) and
+            $a.member == ("serviceAccount:" + $pipeline_email) and
             .index_key == $a.role and
             ($bucket_roles | index($a.role)) != null
           elif $type == "google_iam_workload_identity_pool" and $name == "github_actions" then
@@ -306,16 +312,22 @@ inspect_state_file() {
   local location="$2"
   local resource_count
   local fingerprint
+  local payload_fingerprint
+  local serial
 
   if [[ ! -e "${state_file}" ]]; then
     case "${location}" in
       local)
         LOCAL_STATE_KIND="absent"
         LOCAL_STATE_FINGERPRINT=""
+        LOCAL_STATE_PAYLOAD_FINGERPRINT=""
+        LOCAL_STATE_SERIAL=""
         ;;
       remote)
         REMOTE_STATE_KIND="absent"
         REMOTE_STATE_FINGERPRINT=""
+        REMOTE_STATE_PAYLOAD_FINGERPRINT=""
+        REMOTE_STATE_SERIAL=""
         ;;
       *) die "Internal state-location error." ;;
     esac
@@ -326,7 +338,7 @@ inspect_state_file() {
   jq -e '
     type == "object" and
     .version == 4 and
-    (.serial | type == "number") and
+    (.serial | type == "number" and . >= 0 and . == floor) and
     (.lineage | type == "string" and length > 0) and
     ((.resources // []) | type == "array")
   ' "${state_file}" >/dev/null || die "The ${location} bootstrap state snapshot is malformed."
@@ -344,10 +356,22 @@ inspect_state_file() {
     }' "${state_file}" | sha256sum
   )
   [[ "${fingerprint}" =~ ^[a-f0-9]{64}$ ]] || die "Could not fingerprint ${location} bootstrap state."
+  read -r payload_fingerprint _ < <(
+    jq -cS '{
+      lineage,
+      outputs: (.outputs // {}),
+      resources: (.resources // [])
+    }' "${state_file}" | sha256sum
+  )
+  [[ "${payload_fingerprint}" =~ ^[a-f0-9]{64}$ ]] ||
+    die "Could not fingerprint ${location} bootstrap state payload."
+  serial="$(jq -er '.serial | tostring' "${state_file}")"
 
   case "${location}" in
     local)
       LOCAL_STATE_FINGERPRINT="${fingerprint}"
+      LOCAL_STATE_PAYLOAD_FINGERPRINT="${payload_fingerprint}"
+      LOCAL_STATE_SERIAL="${serial}"
       if ((resource_count > 0)); then
         LOCAL_STATE_KIND="managed"
       else
@@ -356,6 +380,8 @@ inspect_state_file() {
       ;;
     remote)
       REMOTE_STATE_FINGERPRINT="${fingerprint}"
+      REMOTE_STATE_PAYLOAD_FINGERPRINT="${payload_fingerprint}"
+      REMOTE_STATE_SERIAL="${serial}"
       if ((resource_count > 0)); then
         REMOTE_STATE_KIND="managed"
       else
@@ -367,6 +393,17 @@ inspect_state_file() {
 }
 
 inspect_local_state() {
+  if [[ -f "${LOCAL_STATE_FILE}" && ! -L "${LOCAL_STATE_FILE}" &&
+    -r "${LOCAL_STATE_FILE}" && ! -s "${LOCAL_STATE_FILE}" ]]; then
+    [[ -f "${LOCAL_STATE_BACKUP_FILE}" && ! -L "${LOCAL_STATE_BACKUP_FILE}" &&
+      -r "${LOCAL_STATE_BACKUP_FILE}" ]] ||
+      die "The local bootstrap state is an empty migration stub without a readable regular backup; manual recovery is required."
+    inspect_state_file "${LOCAL_STATE_BACKUP_FILE}" local
+    [[ "${LOCAL_STATE_KIND}" == "managed" ]] ||
+      die "The local bootstrap state is an empty migration stub without a managed backup; manual recovery is required."
+    LOCAL_STATE_KIND="migration_stub"
+    return 0
+  fi
   inspect_state_file "${LOCAL_STATE_FILE}" local
 }
 
@@ -399,7 +436,8 @@ inspect_remote_state() {
     die "Could not inspect state objects; refusing to treat an access or API error as absence."
   fi
   object_count="$(jq -er --arg object "${REMOTE_STATE_OBJECT}" \
-    '[.[] | select(.name == $object)] | length' <<<"${object_inventory}")"
+    '[.[] | select(.name == $object and .noncurrent_time? == null)] | length' \
+    <<<"${object_inventory}")"
   [[ "${object_count}" == "0" || "${object_count}" == "1" ]] ||
     die "Remote bootstrap state discovery returned an ambiguous result."
   if [[ "${object_count}" == "0" ]]; then
@@ -420,6 +458,13 @@ states_are_identical() {
     "${LOCAL_STATE_FINGERPRINT}" == "${REMOTE_STATE_FINGERPRINT}" ]]
 }
 
+migration_stub_matches_remote() {
+  [[ -n "${LOCAL_STATE_PAYLOAD_FINGERPRINT}" &&
+    "${LOCAL_STATE_PAYLOAD_FINGERPRINT}" == "${REMOTE_STATE_PAYLOAD_FINGERPRINT}" &&
+    "${LOCAL_STATE_SERIAL}" =~ ^[0-9]+$ && "${REMOTE_STATE_SERIAL}" =~ ^[0-9]+$ ]] &&
+    ((REMOTE_STATE_SERIAL >= LOCAL_STATE_SERIAL))
+}
+
 write_ephemeral_backend() {
   install -m 0600 /dev/null "${BACKEND_FILE}"
   printf '%s\n' 'terraform {' '  backend "gcs" {}' '}' >"${BACKEND_FILE}"
@@ -436,6 +481,13 @@ retire_duplicate_local_state() {
       inspect_remote_state
       if [[ "${REMOTE_STATE_KIND}" != "managed" ]] || ! states_are_identical; then
         die "Local state is no longer an exact duplicate of remote state; refusing to remove it."
+      fi
+      rm -f -- "${LOCAL_STATE_FILE}"
+      ;;
+    migration_stub)
+      inspect_remote_state
+      if [[ "${REMOTE_STATE_KIND}" != "managed" ]] || ! migration_stub_matches_remote; then
+        die "Local migration backup no longer matches remote state; refusing to remove the migration stub."
       fi
       rm -f -- "${LOCAL_STATE_FILE}"
       ;;
@@ -532,6 +584,11 @@ case "${LOCAL_STATE_KIND}:${REMOTE_STATE_KIND}" in
   managed:managed)
     states_are_identical ||
       die "Local and remote bootstrap states both manage resources but differ; manual state recovery is required."
+    selected_backend="remote"
+    ;;
+  migration_stub:managed)
+    migration_stub_matches_remote ||
+      die "The local migration backup differs from remote state; manual state recovery is required."
     selected_backend="remote"
     ;;
   managed:absent|managed:empty)

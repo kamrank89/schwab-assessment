@@ -51,6 +51,18 @@ make configure-github-variables \
 
 The helper never creates a GitHub secret, Environment, reviewer, or branch rule. Apply the [GitHub governance checklist](github.md) separately.
 
+Bootstrap configures 13 generated/fixed repository variables. A repository administrator must then add the required 14th variable locally; do not put its value in Git:
+
+```bash
+read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+gh variable set GCP_CLUSTER_ADMIN_EMAIL \
+  --repo kamrank89/schwab-assessment \
+  --body "${GCP_CLUSTER_ADMIN_EMAIL}"
+unset GCP_CLUSTER_ADMIN_EMAIL
+```
+
+`GCP_CLUSTER_ADMIN_EMAIL` is a permanent super-user assignment, not a bootstrap output. It grants the named human the documented Connect Gateway, Kubernetes `cluster-admin`, and Grafana-secret path. Replacing it requires a reviewed Deploy run before access changes take effect; use the supported [revocation lifecycle](../security/iam-and-secrets.md#permanent-operator-and-revocation) to remove an operator safely.
+
 ## No-key and state policy
 
 - The WIF condition checks immutable repository and owner IDs and the exact `main` branch subject.

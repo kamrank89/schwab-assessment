@@ -49,9 +49,26 @@ For HTTPS, use the owned hostname and expect HTTP 3xx then HTTPS 2xx. Record UTC
 
 ## Grafana access boundary
 
-The committed baseline does not promise interactive human access to the cluster-internal Grafana service. It grants the workflow identity the Connect Gateway and Kubernetes authorization needed for automated delivery and smoke checks, but it does not grant a documented human principal the corresponding IAM-plus-RBAC path for `kubectl port-forward`. Do not impersonate the pipeline identity or infer human access from its permissions.
+Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and the exact hash-suffixed ConfigMap named by its current `dashboards` volume contains the three expected dashboard JSON keys. It deliberately ignores stale generated maps left by earlier applies. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login.
 
-Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and the exact hash-suffixed ConfigMap named by its current `dashboards` volume contains the three expected dashboard JSON keys. It deliberately ignores stale generated maps left by earlier applies. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login. A live UI screenshot requires a separately approved, temporary human access design outside this baseline, including explicit identity, least-privilege IAM/RBAC, Secret Manager access, expiry, audit ownership, and redaction. Until that path is approved and exercised, do not publish a port-forward command or claim a screenshot.
+For an authorized permanent cluster administrator, use the local-only access helper; the active `gcloud` account must be the same user email supplied to it:
+
+```bash
+read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+./scripts/access-grafana.sh \
+  --project-id assessment-507423 \
+  --operator-email "${GCP_CLUSTER_ADMIN_EMAIL}"
+```
+
+Browse to `http://127.0.0.1:3000` and sign in with username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager:
+
+```bash
+gcloud secrets versions access latest \
+  --secret=grafana-admin \
+  --project=assessment-507423
+```
+
+Stop the forward with Ctrl-C when finished. Never paste the password or dashboard data into tickets, logs, artifacts, or Git. This is a permanent `cluster-admin` path, not least-privilege UI access; it includes all resources, Secrets, and authorization mutation in both clusters. See [IAM and secrets](../security/iam-and-secrets.md#permanent-operator-and-revocation) for identity and revocation requirements.
 
 ## Optional exercises
 

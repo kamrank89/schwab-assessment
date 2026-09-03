@@ -1,6 +1,6 @@
 # Grafana
 
-Grafana runs as one recoverable supporting Pod in `us-central1` and is internal-only (`ClusterIP`). The committed baseline provisions no interactive human Connect Gateway/RBAC access path. `emptyDir` stores plugins, data, and logs, so a restart rebuilds from committed provisioning; no assessment claim depends on UI-persisted state.
+Grafana runs as one recoverable supporting Pod in `us-central1` and is internal-only (`ClusterIP`). The committed baseline provisions a permanent operator-only Connect Gateway/RBAC access path; the supported port-forward remains loopback-only. `emptyDir` stores plugins, data, and logs, so a restart rebuilds from committed provisioning; no assessment claim depends on UI-persisted state.
 
 ## Provisioned datasources
 
@@ -21,7 +21,24 @@ The runtime GSA has Monitoring viewer, BigQuery job user, and dataset data viewe
 
 ## Access and evidence boundary
 
-Follow [verification](../operations/verification.md) for the exact boundary. Automated smoke checks only Pod readiness and committed provisioning; it does not log into the UI or prove datasource results. The committed JSON exports are the baseline assessment artifact. A live screenshot requires a separately approved temporary human identity, Connect Gateway IAM, Kubernetes RBAC, Secret Manager access, expiry, audit record, and redaction plan outside this baseline. If such access is later approved, redact project/user/browser/session information and any log content with IPs or payloads.
+Automated smoke checks only Pod readiness and committed provisioning; they do not log into the UI or prove datasource results. The committed JSON exports remain the baseline assessment artifact. The configured permanent cluster administrator can use the supported local-only access helper after a reviewed Deploy has granted that identity:
+
+```bash
+read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+./scripts/access-grafana.sh \
+  --project-id assessment-507423 \
+  --operator-email "${GCP_CLUSTER_ADMIN_EMAIL}"
+```
+
+The helper requires the active `gcloud` account to match that email, verifies administrator authorization through Connect Gateway, and opens only `http://127.0.0.1:3000`. Sign in as username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager:
+
+```bash
+gcloud secrets versions access latest \
+  --secret=grafana-admin \
+  --project=assessment-507423
+```
+
+Stop the port-forward with Ctrl-C when finished. Never paste the password or dashboard data into tickets, logs, artifacts, or Git. The operator has Kubernetes `cluster-admin`, including access to all Secrets and authorization mutation, so use this permanent access path only as described in [IAM and secrets](../security/iam-and-secrets.md#permanent-operator-and-revocation).
 
 ## Recovery
 

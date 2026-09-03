@@ -27,13 +27,25 @@ No Google Cloud deployment has been run from this repository. Account-free check
      GITHUB_REPOSITORY_ID=456
    ```
 
-4. Configure the 13 non-secret GitHub repository variables. Bootstrap attempts this automatically when `gh` is authenticated; the explicit rerun is:
+4. Configure the 13 generated/fixed non-secret GitHub repository variables. Bootstrap attempts this automatically when `gh` is authenticated; the explicit rerun is:
 
    ```bash
    make configure-github-variables \
      GITHUB_REPOSITORY=OWNER/REPO \
      OUTPUTS_FILE=.generated/bootstrap-outputs.json
    ```
+
+   Then add the required 14th repository variable locally. Do not commit the operator email:
+
+   ```bash
+   read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+   gh variable set GCP_CLUSTER_ADMIN_EMAIL \
+     --repo kamrank89/schwab-assessment \
+     --body "${GCP_CLUSTER_ADMIN_EMAIL}"
+   unset GCP_CLUSTER_ADMIN_EMAIL
+   ```
+
+   This is a permanent super-user grant for the named operator. Any change to it requires another reviewed Deploy run to reconcile the cloud and Kubernetes bindings. See [GitHub configuration](docs/setup/github.md) and [operator revocation](docs/security/iam-and-secrets.md#permanent-operator-and-revocation).
 
 5. Protect `main` and review the [GitHub governance checklist](docs/setup/github.md), then dispatch the HTTP baseline from `main`. **Cloud mutation: creates billable foundation, platform, workload, load-balancer, logging, and observability resources.**
 

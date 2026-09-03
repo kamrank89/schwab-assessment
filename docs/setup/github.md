@@ -2,7 +2,7 @@
 
 ## Repository variables
 
-`scripts/configure-github-variables.sh` sets exactly these non-secret repository variables:
+`scripts/configure-github-variables.sh` sets exactly these 13 non-secret repository variables:
 
 | Variable | HTTP baseline |
 | --- | --- |
@@ -21,6 +21,20 @@
 | `GCP_DNS_ZONE_DNS_NAME` | empty |
 
 These are identifiers and feature flags, not credentials. Never replace WIF with a JSON service-account key or a GitHub cloud-key secret.
+
+## Permanent cluster administrator
+
+Bootstrap configures the 13 generated/fixed variables above. It cannot know which human should receive the separate, permanent super-user grant, so a repository administrator must add this required 14th variable locally after bootstrap:
+
+```bash
+read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+gh variable set GCP_CLUSTER_ADMIN_EMAIL \
+  --repo kamrank89/schwab-assessment \
+  --body "${GCP_CLUSTER_ADMIN_EMAIL}"
+unset GCP_CLUSTER_ADMIN_EMAIL
+```
+
+This value is an identity, not a password, but it grants a permanent administrator path: Connect Gateway Reader/Admin, exact-user Kubernetes `cluster-admin` in both clusters, and access to the Grafana password secret. Treat it as a reviewed super-user assignment. Changing this variable does not itself change cloud access; run a reviewed Deploy afterward so Terraform and Kubernetes reconcile the successor identity. Follow the [revocation lifecycle](../security/iam-and-secrets.md#permanent-operator-and-revocation) when removing or replacing an operator.
 
 `deploy.yml` also has three dispatch-time booleans, all default-disabled: `https_to_http_transition`, `run_hpa_drill`, and `run_failover_drill`. The transition input is only the first half of an HTTPS-to-HTTP change, skips foundation/platform Terraform mutation, and rejects either drill; follow [DNS/TLS](dns-tls.md) before selecting it.
 

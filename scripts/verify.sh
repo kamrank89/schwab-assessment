@@ -235,7 +235,9 @@ verify_backend_health() {
   local backend_count=0
 
   backend_services="$(jq -r '
-    (.status.cloudResources.BackendServices //
+    (.status.CloudResources.BackendServices //
+     .status.CloudResources.backendServices //
+     .status.cloudResources.BackendServices //
      .status.cloudResources.backendServices // []) as $services |
     if ($services | type) == "array" then
       $services[]

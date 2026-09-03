@@ -296,17 +296,17 @@ capture_controller_inventory() {
   install -m 0600 /dev/null "${raw_inventory}"
   install -m 0600 /dev/null "${resolved_inventory}"
   append_status_inventory "${mci_json}" forwarding-rule \
-    '.status.cloudResources.ForwardingRules // .status.cloudResources.forwardingRules' "${raw_inventory}"
+    '.status.CloudResources.ForwardingRules // .status.CloudResources.forwardingRules // .status.cloudResources.ForwardingRules // .status.cloudResources.forwardingRules' "${raw_inventory}"
   append_status_inventory "${mci_json}" target-proxy \
-    '.status.cloudResources.TargetProxies // .status.cloudResources.targetProxies' "${raw_inventory}"
+    '.status.CloudResources.TargetProxies // .status.CloudResources.targetProxies // .status.cloudResources.TargetProxies // .status.cloudResources.targetProxies' "${raw_inventory}"
   append_status_inventory "${mci_json}" url-map \
-    '.status.cloudResources.UrlMap // .status.cloudResources.urlMap // .status.cloudResources.UrlMaps // .status.cloudResources.urlMaps' "${raw_inventory}"
+    '.status.CloudResources.UrlMap // .status.CloudResources.urlMap // .status.CloudResources.UrlMaps // .status.CloudResources.urlMaps // .status.cloudResources.UrlMap // .status.cloudResources.urlMap // .status.cloudResources.UrlMaps // .status.cloudResources.urlMaps' "${raw_inventory}"
   append_status_inventory "${mci_json}" health-check \
-    '.status.cloudResources.HealthChecks // .status.cloudResources.healthChecks' "${raw_inventory}"
+    '.status.CloudResources.HealthChecks // .status.CloudResources.healthChecks // .status.cloudResources.HealthChecks // .status.cloudResources.healthChecks' "${raw_inventory}"
   append_status_inventory "${mci_json}" backend-service \
-    '.status.cloudResources.BackendServices // .status.cloudResources.backendServices' "${raw_inventory}"
+    '.status.CloudResources.BackendServices // .status.CloudResources.backendServices // .status.cloudResources.BackendServices // .status.cloudResources.backendServices' "${raw_inventory}"
   append_status_inventory "${mci_json}" firewall-rule \
-    '.status.cloudResources.Firewalls // .status.cloudResources.firewalls // .status.cloudResources.FirewallRules // .status.cloudResources.firewallRules' "${raw_inventory}"
+    '.status.CloudResources.Firewalls // .status.CloudResources.firewalls // .status.CloudResources.FirewallRules // .status.CloudResources.firewallRules // .status.cloudResources.Firewalls // .status.cloudResources.firewalls // .status.cloudResources.FirewallRules // .status.cloudResources.firewallRules' "${raw_inventory}"
 
   # Certificates referenced by networking.gke.io/pre-shared-certs are owned by
   # Terraform in this repository. Only inventory a certificate when the MCI
@@ -316,7 +316,7 @@ capture_controller_inventory() {
     <<<"${mci_json}")"
   if ((controller_tls_secret_count > 0)); then
     append_status_inventory "${mci_json}" ssl-certificate \
-      '.status.cloudResources.SSLCertificates // .status.cloudResources.SslCertificates // .status.cloudResources.sslCertificates // .status.cloudResources.Certificates // .status.cloudResources.certificates' "${raw_inventory}"
+      '.status.CloudResources.SSLCertificates // .status.CloudResources.SslCertificates // .status.CloudResources.sslCertificates // .status.CloudResources.Certificates // .status.CloudResources.certificates // .status.cloudResources.SSLCertificates // .status.cloudResources.SslCertificates // .status.cloudResources.sslCertificates // .status.cloudResources.Certificates // .status.cloudResources.certificates' "${raw_inventory}"
   fi
 
   while IFS=$'\t' read -r resource_kind resource_scope resource_location resource_name; do

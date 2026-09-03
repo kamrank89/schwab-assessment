@@ -63,10 +63,7 @@ active_account="$(gcloud auth list --filter=status:ACTIVE --format='value(accoun
 
 temporary_parent="${TMPDIR:-/tmp}"
 temporary_parent="${temporary_parent%/}"
-temporary_root="$(mktemp -d "${temporary_parent}/gke-assessment-grafana.XXXXXX")"
-chmod 0700 "${temporary_root}"
-kubeconfig="${temporary_root}/gateway.kubeconfig"
-install -m 0600 /dev/null "${kubeconfig}"
+temporary_root=""
 cleanup() {
   if [[ -n "${temporary_root}" &&
         "${temporary_root}" == "${temporary_parent}"/gke-assessment-grafana.* &&
@@ -79,11 +76,20 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+temporary_root="$(mktemp -d "${temporary_parent}/gke-assessment-grafana.XXXXXX")"
+chmod 0700 "${temporary_root}"
+kubeconfig="${temporary_root}/gateway.kubeconfig"
+install -m 0600 /dev/null "${kubeconfig}"
+
 KUBECONFIG="${kubeconfig}" gcloud container fleet memberships get-credentials \
   gke-assessment-us-central1 --location=global --project="${project_id}" --quiet >/dev/null
 chmod 0600 "${kubeconfig}"
 
-[[ "$(KUBECONFIG="${kubeconfig}" kubectl auth can-i '*' '*' --all-namespaces)" == "yes" ]] ||
+authorization_output=""
+if ! authorization_output="$(KUBECONFIG="${kubeconfig}" kubectl auth can-i '*' '*' --all-namespaces)"; then
+  die "The active account is not cluster-admin through Connect Gateway."
+fi
+[[ "${authorization_output}" == "yes" ]] ||
   die "The active account is not cluster-admin through Connect Gateway."
 KUBECONFIG="${kubeconfig}" kubectl -n observability wait \
   --for=condition=Available deployment/grafana --timeout=60s >/dev/null

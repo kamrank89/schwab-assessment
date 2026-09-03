@@ -218,7 +218,7 @@ jobs:
         run: ./scripts/verify.sh smoke
       - name: Upload redacted smoke report
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smoke-report
           path: artifacts/live/smoke-*.txt
@@ -264,7 +264,7 @@ jobs:
         run: ./scripts/verify.sh hpa --region us-central1 --confirm "HPA us-central1"
       - name: Upload redacted HPA report
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hpa-drill-report
           path: artifacts/live/hpa-*.txt
@@ -315,7 +315,7 @@ jobs:
         run: ./scripts/verify.sh failover --region us-east1 --confirm "FAILOVER us-east1"
       - name: Upload redacted failover report
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: failover-drill-report
           path: artifacts/live/failover-*.txt

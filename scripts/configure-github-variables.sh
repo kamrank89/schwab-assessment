@@ -91,9 +91,9 @@ variable_values=(
   false
   false
   false
-  ""
-  ""
-  ""
+  "unused.invalid"
+  "unused-zone"
+  "unused.invalid"
 )
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then

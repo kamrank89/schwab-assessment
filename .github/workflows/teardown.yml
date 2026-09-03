@@ -49,7 +49,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned teardown tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Tear down assessment resources
         env:
           DISPATCHED_PROJECT_ID: ${{ inputs.project_id }}

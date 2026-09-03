@@ -85,7 +85,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Detach HTTPS before HTTP Terraform mutation
         run: ./scripts/deploy.sh https-to-http
 
@@ -129,7 +131,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Deploy foundation
         run: ./scripts/deploy.sh foundation
 
@@ -173,7 +177,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Deploy platform
         run: ./scripts/deploy.sh platform
       - name: Deploy workloads
@@ -213,7 +219,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Run smoke verification
         run: ./scripts/verify.sh smoke
       - name: Upload redacted smoke report
@@ -259,7 +267,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Run controlled HPA exercise
         run: ./scripts/verify.sh hpa --region us-central1 --confirm "HPA us-central1"
       - name: Upload redacted HPA report
@@ -310,7 +320,9 @@ jobs:
           version: 582.0.0
           install_components: gke-gcloud-auth-plugin,bq
       - name: Install pinned deployment tools
-        run: make tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
       - name: Run controlled application failover exercise
         run: ./scripts/verify.sh failover --region us-east1 --confirm "FAILOVER us-east1"
       - name: Upload redacted failover report

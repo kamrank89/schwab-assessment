@@ -99,10 +99,9 @@ spec:
             matchLabels:
               app.kubernetes.io/name: app-a
           maxSkew: 1
-          minDomains: 2
           nodeTaintsPolicy: Honor
           topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: ScheduleAnyway
         - labelSelector:
             matchLabels:
               app.kubernetes.io/name: app-a

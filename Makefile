@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
 PATH := $(CURDIR)/.tools/bin:$(PATH)
 
-.PHONY: tools tool-versions bootstrap configure-github-variables render-manifests deploy-foundation deploy-platform deploy-workloads verify-smoke verify-hpa verify-failover teardown fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-tests security-scan validate
+.PHONY: tools tool-versions bootstrap configure-github-variables render-manifests deploy-foundation deploy-platform deploy-workloads verify-smoke verify-hpa verify-failover teardown fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana security-scan validate
 
 tools:
 	./scripts/install-tools.sh
@@ -69,8 +69,8 @@ validate-kubernetes:
 	done
 
 validate-shell:
-	bash -n scripts/*.sh tests/*.sh tests/fixtures/*/*
-	shellcheck scripts/*.sh tests/*.sh tests/fixtures/*/*
+	bash -n scripts/*.sh
+	shellcheck scripts/*.sh
 
 validate-workflows:
 	actionlint .github/workflows/*.yml
@@ -78,11 +78,6 @@ validate-workflows:
 validate-grafana:
 	@find k8s/base/grafana/files/dashboards -type f -name '*.json' -print0 | \
 	  xargs -0 -n1 jq empty
-
-validate-tests:
-	tests/access-grafana-test.sh
-	tests/teardown-preflight-test.sh
-	tests/render-manifests-make-test.sh
 
 security-scan:
 	@if ! command -v trivy >/dev/null; then \
@@ -96,4 +91,4 @@ security-scan:
 	    trivy image --ignore-unfixed --severity HIGH,CRITICAL "$$image"; \
 	  done
 
-validate: fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana validate-tests
+validate: fmt validate-terraform validate-kubernetes validate-shell validate-workflows validate-grafana

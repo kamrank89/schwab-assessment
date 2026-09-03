@@ -9,10 +9,9 @@ locals {
     global_address_name     = tostring(local.foundation_outputs.global_address_name)
     cloud_armor_policy_name = tostring(local.foundation_outputs.cloud_armor_policy_name)
     ssl_policy_name         = tostring(local.foundation_outputs.ssl_policy_name)
-    tls_certificate_name = (
-      local.foundation_outputs.tls_certificate_name == null
-      ? null
-      : tostring(local.foundation_outputs.tls_certificate_name)
+    tls_certificate_name = try(
+      tostring(local.foundation_outputs.tls_certificate_name),
+      null
     )
     bigquery_dataset_id       = tostring(local.foundation_outputs.bigquery_dataset_id)
     grafana_runtime_gsa_email = tostring(local.foundation_outputs.grafana_runtime_gsa_email)

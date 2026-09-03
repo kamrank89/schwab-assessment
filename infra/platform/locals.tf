@@ -19,6 +19,7 @@ locals {
     gke_node_gsa_email        = tostring(local.foundation_outputs.gke_node_gsa_email)
     app_a_secret_id           = tostring(local.foundation_outputs.app_a_secret_id)
     grafana_admin_secret_id   = tostring(local.foundation_outputs.grafana_admin_secret_id)
+    cluster_admin_email       = tostring(local.foundation_outputs.cluster_admin_email)
     cluster_networks = tomap({
       for location, network in local.foundation_outputs.cluster_networks : location => {
         subnet_cidr          = tostring(network.subnet_cidr)

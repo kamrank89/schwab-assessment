@@ -119,3 +119,16 @@ variable "sre_principals" {
     error_message = "sre_principals must be null or contain only non-empty IAM principal strings."
   }
 }
+
+variable "cluster_admin_email" {
+  description = "Google user email receiving permanent Connect Gateway and Kubernetes cluster-admin access."
+  type        = string
+
+  validation {
+    condition = can(regex(
+      "^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$",
+      lower(trimspace(var.cluster_admin_email)),
+    ))
+    error_message = "cluster_admin_email must be a valid bare Google user email."
+  }
+}

@@ -79,3 +79,8 @@ output "grafana_admin_secret_id" {
   description = "The Grafana administrator Secret Manager container ID."
   value       = google_secret_manager_secret.grafana_admin.secret_id
 }
+
+output "cluster_admin_email" {
+  description = "The Google user email authorized for permanent cluster administration."
+  value       = local.cluster_admin_email
+}

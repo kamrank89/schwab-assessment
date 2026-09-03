@@ -74,6 +74,11 @@ output "grafana_admin_secret_id" {
   value       = local.foundation.grafana_admin_secret_id
 }
 
+output "cluster_admin_email" {
+  description = "The Google user email authorized for permanent cluster administration."
+  value       = local.foundation.cluster_admin_email
+}
+
 output "fleet_get_credentials_commands" {
   description = "Connect Gateway credential command templates for the Fleet memberships."
   value = {

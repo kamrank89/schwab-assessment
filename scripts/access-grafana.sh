@@ -47,8 +47,7 @@ while (($# > 0)); do
   esac
 done
 
-[[ "${project_id}" != "invalid" &&
-  "${project_id}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "Invalid project ID."
+[[ "${project_id}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "Invalid project ID."
 [[ "${operator_email}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
   die "--operator-email is not a valid Google user email."
 

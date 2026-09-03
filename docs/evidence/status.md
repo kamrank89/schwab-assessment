@@ -1,6 +1,6 @@
 # Evidence status
 
-Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` worktree. No Google Cloud authentication, Terraform plan/apply/destroy/state operation, lifecycle script, executable Cloud SDK operation, `bq`, `kubectl`, `gh`, workflow dispatch, deployment, drill, or teardown command was run for this authorized teardown safety round.
+Last account-free validation: 2026-09-03 UTC in the `permanent-cluster-grafana-access` worktree. The real local access, teardown-preflight, and rendering interfaces were exercised only against controlled fake external commands or fixture values. No Google Cloud authentication, Terraform plan/apply/destroy/state operation, real Cloud SDK/`kubectl`/`bq`/`gh` call, workflow dispatch, deployment, drill, or teardown mutation was run.
 
 ## Status vocabulary
 
@@ -14,7 +14,8 @@ Last account-free validation: 2026-09-02 UTC in the `assessment-implementation` 
 
 | Scope | Command | Result | Status |
 | --- | --- | --- | --- |
-| Full repository validation | `make validate` | Exit 0. Terraform formatting and all three `init -backend=false` validations succeeded; Kubernetes summaries had zero invalid/errors; Bash/ShellCheck, actionlint, and Grafana JSON parsing succeeded. GKE-specific schemas were skipped where unavailable. | `verified-account-free` |
+| Full repository validation | `make validate` | Exit 0. Terraform formatting and all three `init -backend=false` validations succeeded; Kubernetes summaries had zero invalid/errors; Bash/ShellCheck, actionlint, Grafana JSON parsing, and the committed access/teardown/renderer regressions succeeded. GKE-specific schemas were skipped where unavailable. | `verified-account-free` |
+| Permanent operator final-review regressions | `make validate-tests`; syntax/consistency check for both documented Secret Manager command blocks | Exit 0. Four credential-override environment classes, three `auth/*` properties, ADC/account pinning, four teardown input cases, and the Make renderer wrapper passed with fixture identities only. Both documentation blocks were syntax-valid and byte-identical; the credential command was not executed. | `verified-account-free` |
 | Authorized teardown safety round | `bash -n scripts/teardown.sh`; `shellcheck scripts/teardown.sh`; `make validate`; tracked-Markdown relative-link scan; sensitive-artifact search; `git diff --check` | Exit 0. The completion-bound empty-platform path and exact live/noncurrent/soft-deleted object classifier passed repository-native syntax/static checks. No lifecycle path or cloud behavior was exercised. | `verified-account-free` |
 | Final integration focused checks | `bash -n` and `shellcheck` for `deploy.sh`, `teardown.sh`, and `verify.sh`; `actionlint` for `deploy.yml`; focused Kustomize/Kubeconform renders | Exit 0. All four changed control flows passed syntax/static workflow analysis; the primary workload and HTTP/TLS/HTTPS config overlays rendered with zero invalid resources or errors. This does not exercise a cloud lifecycle path. | `verified-account-free` |
 | Focused immutable-subject regression checks | `terraform fmt -check -recursive infra`; bootstrap `init -backend=false` and `validate`; `bash -n scripts/bootstrap.sh`; `shellcheck scripts/bootstrap.sh` | Exit 0 after standard formatting; bootstrap Terraform and recovery-script syntax/static analysis succeeded. This does not mint or inspect a GitHub token. | `verified-account-free` |
@@ -41,7 +42,7 @@ The command output existed only in the local task session; no fabricated evidenc
 | Workload Identity and Secret Manager runtime mounts | `deployment-evidence-pending` | Redacted IAM/secret record |
 | BigQuery exact routed-table/schema readiness, SQL dry runs, and bounded query results | `deployment-evidence-pending` | BigQuery record |
 | Grafana Pod and current Deployment-referenced dashboard ConfigMap | `deployment-evidence-pending` | Smoke record; committed export is static only |
-| Grafana datasource results or populated live panels | `deployment-evidence-pending` | Separately approved temporary-access evidence; baseline smoke does not test them |
+| Grafana datasource results or populated live panels | `deployment-evidence-pending` | Deployed permanent operator's sanitized, loopback-only access record; baseline smoke does not test them |
 | Planned readiness-probe troubleshooting exercise | `deployment-evidence-pending` | Troubleshooting record |
 | Optional HPA reconciliation exercise, configuration reapplication, and exact restoration | `deployment-evidence-pending` | HPA drill record plus a subsequent smoke record for exact three-replica restoration; `not-applicable` only when omitted from a completed run |
 | Optional application failover exercise, configuration reapplication, and exact restoration | `deployment-evidence-pending` | Failover drill record plus a subsequent smoke record for exact three-replica restoration; `not-applicable` only when omitted from a completed run |

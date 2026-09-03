@@ -47,6 +47,8 @@ Runtime secret behavior is live-only. Static manifests prove intended identity a
 
 `GCP_CLUSTER_ADMIN_EMAIL` identifies one Google user who receives a permanent human administration path. Foundation Terraform grants that exact user `roles/gkehub.gatewayReader` and `roles/gkehub.gatewayAdmin` in the assessment project plus `roles/secretmanager.secretAccessor` only on the `grafana-admin` secret. The platform applies the same exact bare user subject to the built-in Kubernetes `cluster-admin` ClusterRole in each cluster.
 
+Local access must not trust `gcloud auth list` alone. The supported helper rejects configured access-token, credential-file, and service-account-impersonation overrides without printing their values, forces `container/use_application_default_credentials=false`, and pins the expected user for Gateway credential generation and every kubectl auth-plugin execution. The documented Secret Manager command repeats that same fail-closed exact-user boundary.
+
 This is a super-user grant, not a least-privilege Grafana role. Kubernetes `cluster-admin` can act on all resources in both clusters, including reading and changing Secrets and changing authorization objects. In practice, authorization mutation can create further access paths. Limit it to the named operator, review every assignment, and never use the Grafana password or dashboard data in tickets, logs, artifacts, or Git.
 
 Revoke the operator using one of these supported lifecycles:

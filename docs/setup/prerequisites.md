@@ -11,7 +11,7 @@ make tool-versions
 make validate
 ```
 
-`make validate` runs Terraform formatting and `init -backend=false` validation, Kustomize/Kubeconform schema validation, Bash syntax and ShellCheck, actionlint, and Grafana JSON parsing. GKE-specific schemas may be reported as skipped by Kubeconform; recognized Kubernetes schemas must still be valid. The command never authenticates, plans, applies, accesses a cluster, runs Trivy, or proves live behavior.
+`make validate` runs Terraform formatting and `init -backend=false` validation, Kustomize/Kubeconform schema validation, Bash syntax and ShellCheck, actionlint, Grafana JSON parsing, and account-free lifecycle/helper regressions against controlled fake external commands. GKE-specific schemas may be reported as skipped by Kubeconform; recognized Kubernetes schemas must still be valid. The command never authenticates, plans, applies, accesses a cluster, runs Trivy, or proves live behavior.
 
 ## GitHub CLI for operator convenience
 

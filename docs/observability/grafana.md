@@ -30,12 +30,64 @@ read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
   --operator-email "${GCP_CLUSTER_ADMIN_EMAIL}"
 ```
 
-The helper requires the active `gcloud` account to match that email, verifies administrator authorization through Connect Gateway, and opens only `http://127.0.0.1:3000`. Sign in as username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager:
+The helper requires the active `gcloud` account to match that email; rejects credential/access-token and service-account-impersonation overrides; forces Application Default Credentials off; pins that account for Gateway credential generation and kubectl authentication; verifies administrator authorization through Connect Gateway; and opens only `http://127.0.0.1:3000`. Sign in as username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager only after repeating the same fail-closed exact-user checks. The checks capture configured override values only in shell variables and never print them:
 
 ```bash
-gcloud secrets versions access latest \
-  --secret=grafana-admin \
-  --project=assessment-507423
+(
+  set -euo pipefail
+  set +x
+
+  read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+  [[ "${GCP_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || {
+    printf '%s\n' 'ERROR: Invalid cluster administrator email.' >&2
+    exit 1
+  }
+  expected_operator="${GCP_CLUSTER_ADMIN_EMAIL,,}"
+
+  for variable_name in \
+    CLOUDSDK_AUTH_ACCESS_TOKEN \
+    CLOUDSDK_AUTH_ACCESS_TOKEN_FILE \
+    CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT; do
+    [[ -z "${!variable_name+x}" ]] || {
+      printf '%s\n' 'ERROR: Google Cloud credential override environment variables must be unset.' >&2
+      exit 1
+    }
+  done
+
+  for property_name in \
+    auth/access_token_file \
+    auth/credential_file_override \
+    auth/impersonate_service_account; do
+    if ! property_value="$(gcloud config get-value "${property_name}" 2>/dev/null)"; then
+      printf '%s\n' 'ERROR: Could not verify the active gcloud credential configuration.' >&2
+      exit 1
+    fi
+    [[ -z "${property_value}" || "${property_value}" == "(unset)" ]] || {
+      printf '%s\n' 'ERROR: Google Cloud credential override properties must be unset.' >&2
+      exit 1
+    }
+  done
+
+  if ! active_account="$(
+    gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null
+  )"; then
+    printf '%s\n' 'ERROR: Could not verify the active gcloud account.' >&2
+    exit 1
+  fi
+  [[ "${active_account}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ &&
+    "${active_account,,}" == "${expected_operator}" ]] || {
+    printf '%s\n' 'ERROR: The active gcloud account does not match the expected operator.' >&2
+    exit 1
+  }
+
+  CLOUDSDK_CORE_ACCOUNT="${expected_operator}" \
+  CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS=false \
+    gcloud secrets versions access latest \
+      --secret=grafana-admin \
+      --project=assessment-507423 \
+      --account="${expected_operator}"
+)
 ```
 
 Stop the port-forward with Ctrl-C when finished. Never paste the password or dashboard data into tickets, logs, artifacts, or Git. The operator has Kubernetes `cluster-admin`, including access to all Secrets and authorization mutation, so use this permanent access path only as described in [IAM and secrets](../security/iam-and-secrets.md#permanent-operator-and-revocation).

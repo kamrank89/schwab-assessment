@@ -6,6 +6,7 @@ Teardown is manual, destructive, and serialized with deployment. It must run fro
 
 - Stop application changes and ensure no deploy run shares the `assessment-production` concurrency group.
 - Capture required evidence and the serving commit SHA; never save plans, state, kubeconfigs, tokens, passwords, or secret values.
+- Confirm the required `GCP_CLUSTER_ADMIN_EMAIL` repository variable still names the operator whose Terraform grant will be destroyed. The script validates that single input, rejects a differing nonempty `TF_VAR_cluster_admin_email`, and exports its normalized value before any lifecycle inspection or mutation.
 - Identify external DNS records or registrar delegation not owned by Terraform.
 - Review the billable-resource inventory and version-aware remote-state health. Live, noncurrent, and soft-deleted generations are distinct evidence classes.
 - Obtain the recommended independent `teardown` approval.

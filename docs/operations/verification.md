@@ -21,7 +21,7 @@ The manual `deploy.yml` workflow always runs this exact authenticated command af
 ./scripts/verify.sh smoke
 ```
 
-Required environment: `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `GCP_DEPLOYER_SERVICE_ACCOUNT`, `TF_STATE_BUCKET`, and `GCP_ENABLE_HTTPS`; add `GCP_DNS_NAME` when HTTPS is enabled. The workflow supplies them from repository variables and authenticates as `assessment-deployer` through WIF.
+Required environment: `GCP_PROJECT_ID`, `GCP_PROJECT_NUMBER`, `GCP_DEPLOYER_SERVICE_ACCOUNT`, `GCP_CLUSTER_ADMIN_EMAIL`, `TF_STATE_BUCKET`, and `GCP_ENABLE_HTTPS`; add `GCP_DNS_NAME` when HTTPS is enabled. The workflow supplies them from repository variables and authenticates as `assessment-deployer` through WIF.
 
 Smoke checks:
 
@@ -51,7 +51,7 @@ For HTTPS, use the owned hostname and expect HTTP 3xx then HTTPS 2xx. Record UTC
 
 Smoke verification proves only that the health-probe-gated Grafana Pod is Ready and the exact hash-suffixed ConfigMap named by its current `dashboards` volume contains the three expected dashboard JSON keys. It deliberately ignores stale generated maps left by earlier applies. The three committed JSON exports, including the four required overview panels, satisfy the assessment's export alternative without a live login.
 
-For an authorized permanent cluster administrator, use the local-only access helper; the active `gcloud` account must be the same user email supplied to it:
+For an authorized permanent cluster administrator, use the local-only access helper. It requires the active `gcloud` account to be the same user email supplied to it, rejects credential/access-token and service-account-impersonation overrides, forces Application Default Credentials off, and pins that account for Gateway credential generation and kubectl authentication:
 
 ```bash
 read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
@@ -60,12 +60,64 @@ read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
   --operator-email "${GCP_CLUSTER_ADMIN_EMAIL}"
 ```
 
-Browse to `http://127.0.0.1:3000` and sign in with username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager:
+Browse to `http://127.0.0.1:3000` and sign in with username `admin`. In a separate local terminal, retrieve the password directly from Secret Manager only after repeating the same fail-closed exact-user checks. The checks capture configured override values only in shell variables and never print them:
 
 ```bash
-gcloud secrets versions access latest \
-  --secret=grafana-admin \
-  --project=assessment-507423
+(
+  set -euo pipefail
+  set +x
+
+  read -rp 'Cluster administrator Google email: ' GCP_CLUSTER_ADMIN_EMAIL
+  [[ "${GCP_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || {
+    printf '%s\n' 'ERROR: Invalid cluster administrator email.' >&2
+    exit 1
+  }
+  expected_operator="${GCP_CLUSTER_ADMIN_EMAIL,,}"
+
+  for variable_name in \
+    CLOUDSDK_AUTH_ACCESS_TOKEN \
+    CLOUDSDK_AUTH_ACCESS_TOKEN_FILE \
+    CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
+    CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT; do
+    [[ -z "${!variable_name+x}" ]] || {
+      printf '%s\n' 'ERROR: Google Cloud credential override environment variables must be unset.' >&2
+      exit 1
+    }
+  done
+
+  for property_name in \
+    auth/access_token_file \
+    auth/credential_file_override \
+    auth/impersonate_service_account; do
+    if ! property_value="$(gcloud config get-value "${property_name}" 2>/dev/null)"; then
+      printf '%s\n' 'ERROR: Could not verify the active gcloud credential configuration.' >&2
+      exit 1
+    fi
+    [[ -z "${property_value}" || "${property_value}" == "(unset)" ]] || {
+      printf '%s\n' 'ERROR: Google Cloud credential override properties must be unset.' >&2
+      exit 1
+    }
+  done
+
+  if ! active_account="$(
+    gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null
+  )"; then
+    printf '%s\n' 'ERROR: Could not verify the active gcloud account.' >&2
+    exit 1
+  fi
+  [[ "${active_account}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ &&
+    "${active_account,,}" == "${expected_operator}" ]] || {
+    printf '%s\n' 'ERROR: The active gcloud account does not match the expected operator.' >&2
+    exit 1
+  }
+
+  CLOUDSDK_CORE_ACCOUNT="${expected_operator}" \
+  CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS=false \
+    gcloud secrets versions access latest \
+      --secret=grafana-admin \
+      --project=assessment-507423 \
+      --account="${expected_operator}"
+)
 ```
 
 Stop the forward with Ctrl-C when finished. Never paste the password or dashboard data into tickets, logs, artifacts, or Git. This is a permanent `cluster-admin` path, not least-privilege UI access; it includes all resources, Secrets, and authorization mutation in both clusters. See [IAM and secrets](../security/iam-and-secrets.md#permanent-operator-and-revocation) for identity and revocation requirements.

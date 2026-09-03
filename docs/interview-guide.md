@@ -2,7 +2,7 @@
 
 ## Ninety-second architecture narrative
 
-“I separated ownership into three Terraform state roots: human-only bootstrap creates a versioned GCS backend and repository-scoped keyless GitHub identity; foundation owns shared network, ingress address, security, secrets, and log export; platform owns two private regional Autopilot clusters and Fleet multi-cluster features. Kustomize then deploys two applications with three replicas and an HPA baseline in each region, plus recoverable Grafana in the primary cluster.
+“I separated ownership into three Terraform state roots: human-only bootstrap creates a versioned GCS backend and repository-scoped keyless GitHub identity; foundation owns shared network, ingress address, security, secrets, log export, and exact-user operator IAM; platform owns two private regional Autopilot clusters and Fleet multi-cluster features. Kustomize then deploys the exact-user operator RBAC, two applications with three replicas and an HPA baseline in each region, plus recoverable Grafana in the primary cluster.
 
 “A global reserved IP feeds MCI/MCS, which routes `/app-a` and `/app-b` to healthy Pods in both regions and attaches Cloud Armor. HTTP by IP is the safe first verification path; owned DNS and a managed certificate are optional. Logs flow through Cloud Logging into partitioned BigQuery tables, and committed Grafana exports include the four required overview panels.
 
@@ -13,7 +13,7 @@
 ```text
 make tools && make validate
   -> human ADC bootstrap once
-  -> configure 13 non-secret GitHub variables
+  -> configure 13 generated/fixed variables + 1 reviewed operator identity
   -> manual deploy.yml from main, transition/drills false
   -> automatic smoke + evidence collection
   -> guarded teardown.yml with DESTROY <project>
@@ -35,6 +35,8 @@ It matches the explicit rubric and provides a concise multi-region global routin
 
 It makes one-time assessment bootstrap and manual lifecycle reproducible without keys. Its broad permissions increase blast radius. Production should separate bootstrap, foundation, platform, workload, verifier, and teardown identities with protected Environment subjects and narrow roles.
 
+The single deployer describes automation only. A separate, reviewed Google user is declaratively granted permanent Connect Gateway, Kubernetes `cluster-admin`, and secret-scoped Grafana password access; the supported helper keeps Grafana private behind a sanitized loopback-only port-forward. This is intentionally a super-user operator path, not production least privilege.
+
 ### Why HTTP first?
 
 It verifies the global IP and both routes without requiring ownership/delegation of a domain. Managed TLS cannot be honestly verified until public DNS points an owned hostname at the load balancer. HTTP is an assessment baseline, not the production security endpoint.
@@ -54,7 +56,7 @@ Destroying the identity and state anchor in the same path that needs them is fra
 - **What is verified now?** Only the account-free commands recorded in `docs/evidence/status.md`.
 - **What proves six replicas?** A future smoke report showing three desired/Ready/updated/available App A and App B replicas in each of two regions.
 - **Is failover tested?** No. The repository has a bounded application-backend exercise with restoration traps; it remains pending until deliberately run.
-- **Is Grafana working?** Three JSON exports parse and are committed; live Pod/datasource/panel health is pending.
+- **Is Grafana working?** Three JSON exports parse and are committed, and the permanent operator/loopback access path is implemented account-free; live Pod/datasource/panel access is still pending an authorized deployment and redacted record.
 - **Are the BigQuery queries proven?** Their source is reviewed; future smoke first waits for the four exact routed tables and compatible top-level schema, then dry-runs all seven. Useful rows and results are still live evidence.
 - **Did teardown leave nothing?** No teardown has run, and normal teardown intentionally retains bootstrap state/WIF/deployer plus empty state and its completion marker. A residual record must distinguish destroyed, already-empty, and both skipped-stage proofs from retained anchors. Historical-only or soft-deleted-only state is a recovery stop, not proof that a stage never existed.
 

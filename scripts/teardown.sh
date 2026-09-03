@@ -83,6 +83,15 @@ done
 [[ "${PROJECT_ID}" == "${GCP_PROJECT_ID}" ]] || die "Dispatched project ID does not match GCP_PROJECT_ID."
 [[ "${CONFIRMATION}" == "DESTROY ${PROJECT_ID}" ]] ||
   die "Confirmation must be exactly: DESTROY ${PROJECT_ID}"
+[[ -n "${GCP_CLUSTER_ADMIN_EMAIL:-}" ]] || die "GCP_CLUSTER_ADMIN_EMAIL is required."
+[[ "${GCP_CLUSTER_ADMIN_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] ||
+  die "Invalid GCP_CLUSTER_ADMIN_EMAIL."
+CLUSTER_ADMIN_EMAIL="${GCP_CLUSTER_ADMIN_EMAIL,,}"
+if [[ -n "${TF_VAR_cluster_admin_email:-}" ]]; then
+  [[ "${TF_VAR_cluster_admin_email,,}" == "${CLUSTER_ADMIN_EMAIL}" ]] ||
+    die "TF_VAR_cluster_admin_email must match GCP_CLUSTER_ADMIN_EMAIL."
+fi
+export TF_VAR_cluster_admin_email="${CLUSTER_ADMIN_EMAIL}"
 [[ -n "${TF_STATE_BUCKET:-}" ]] || die "TF_STATE_BUCKET is required."
 [[ "${TF_STATE_BUCKET}" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] || die "Invalid TF_STATE_BUCKET."
 [[ -n "${GCP_WIF_PROVIDER:-}" ]] || die "GCP_WIF_PROVIDER is required for the retained-resource report."

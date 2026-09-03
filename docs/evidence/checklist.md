@@ -50,7 +50,7 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 - [ ] any actual query uses a bounded UTC/partition window; output is minimized and redacted; schema-discovery payloads and log rows are not uploaded
 - [ ] Grafana Deployment has one Ready/available primary-cluster replica
 - [ ] the exact dashboard ConfigMap referenced by the current Grafana Deployment contains exactly the three expected JSON exports; stale hash-suffixed maps are excluded
-- [ ] dashboard artifact is the committed JSON export; a redacted live screenshot is optional and requires a separately approved temporary human IAM/RBAC access record outside the baseline
+- [ ] dashboard artifact is the committed JSON export; a redacted live screenshot is optional and uses the deployed permanent operator's sanitized, loopback-only access path, with no password, kubeconfig, dashboard data, or operator email captured
 - [ ] screenshot/export shows the four overview panels: error rate, restarts, p50/p95/p99 latency, CPU/memory
 
 ## Optional exercises — only if deliberately selected

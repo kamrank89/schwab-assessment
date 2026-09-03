@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+{
+  printf '%s\n' 'mktemp'
+  printf 'TF_VAR_CLUSTER_ADMIN_EMAIL=%s\n' "${TF_VAR_cluster_admin_email-}"
+} >>"${LIFECYCLE_LOG}"
+exit 97

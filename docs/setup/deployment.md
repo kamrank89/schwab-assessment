@@ -15,7 +15,7 @@ GCP_DNS_ZONE_NAME=
 GCP_DNS_ZONE_DNS_NAME=
 ```
 
-Review all 13 values in repository settings before dispatch. Regions are fixed to `us-central1` and `us-east1`; the scripts reject other values. For HTTPS, use the exact combinations in [DNS/TLS](dns-tls.md).
+Review all 14 required values in repository settings before dispatch: the 13 generated/fixed variables plus the separately reviewed `GCP_CLUSTER_ADMIN_EMAIL`. Regions are fixed to `us-central1` and `us-east1`; the scripts reject other values. For HTTPS, use the exact combinations in [DNS/TLS](dns-tls.md).
 
 ## Dispatch the baseline
 

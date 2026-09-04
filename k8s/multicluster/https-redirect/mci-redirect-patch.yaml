@@ -1,0 +1,7 @@
+apiVersion: networking.gke.io/v1
+kind: MultiClusterIngress
+metadata:
+  annotations:
+    networking.gke.io/frontend-config: assessment-https
+  name: assessment-ingress
+  namespace: assessment

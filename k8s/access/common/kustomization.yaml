@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - assessment-role.yaml
+  - assessment-rolebinding.yaml
+  - gateway-impersonation.yaml
+  - operator-cluster-admin.yaml

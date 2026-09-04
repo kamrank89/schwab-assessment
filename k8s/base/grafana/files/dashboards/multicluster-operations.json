@@ -1,0 +1,266 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "gcp-bigquery"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "gcp-bigquery"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "location": "US",
+          "project": "${GCP_PROJECT_ID}",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  TIMESTAMP_TRUNC(timestamp, MINUTE) AS time,\n  COALESCE(resource.labels.zone, 'global') AS region,\n  COUNT(*) AS requests\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\nGROUP BY time, region\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Request volume by serving region",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "gcp-monitoring"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "gcp-monitoring"
+          },
+          "metricQuery": {
+            "aliasBy": "{{resource.label.cluster_name}}",
+            "alignmentPeriod": "stackdriver-auto",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "editorMode": "visual",
+            "filters": [
+              "resource.label.namespace_name",
+              "=",
+              "assessment"
+            ],
+            "groupBys": [
+              "resource.label.cluster_name"
+            ],
+            "metricKind": "CUMULATIVE",
+            "metricType": "kubernetes.io/container/restart_count",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "preprocessor": "none",
+            "projectName": "${GCP_PROJECT_ID}",
+            "resourceType": "k8s_container",
+            "valueType": "INT64"
+          },
+          "queryType": "metrics",
+          "refId": "A"
+        }
+      ],
+      "title": "Restarts by cluster",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "gcp-monitoring"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.2.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "gcp-monitoring"
+          },
+          "metricQuery": {
+            "aliasBy": "p95 {{resource.label.forwarding_rule_name}}",
+            "alignmentPeriod": "stackdriver-auto",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "editorMode": "visual",
+            "filters": [],
+            "metricKind": "DELTA",
+            "metricType": "loadbalancing.googleapis.com/https/backend_latencies",
+            "perSeriesAligner": "ALIGN_PERCENTILE_95",
+            "preprocessor": "none",
+            "projectName": "${GCP_PROJECT_ID}",
+            "resourceType": "https_lb_rule",
+            "valueType": "DISTRIBUTION"
+          },
+          "queryType": "metrics",
+          "refId": "A"
+        }
+      ],
+      "title": "Global backend latency p95",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 42,
+  "tags": [
+    "assessment",
+    "gke",
+    "multicluster"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Multi-cluster operations",
+  "uid": "multicluster-operations",
+  "version": 1,
+  "weekStart": ""
+}

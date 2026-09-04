@@ -1,0 +1,69 @@
+name: teardown
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: Project ID to tear down. It must exactly match the configured repository variable.
+        required: true
+        type: string
+      confirmation:
+        description: Type DESTROY <project-id> exactly.
+        required: true
+        type: string
+
+concurrency:
+  group: assessment-production
+  cancel-in-progress: false
+
+jobs:
+  teardown:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    env:
+      CLOUDSDK_CORE_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      GCP_CLUSTER_ADMIN_EMAIL: ${{ vars.GCP_CLUSTER_ADMIN_EMAIL }}
+      TF_VAR_cluster_admin_email: ${{ vars.GCP_CLUSTER_ADMIN_EMAIL }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          audience: https://iam.googleapis.com/${{ vars.GCP_WIF_PROVIDER }}
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 582.0.0
+          install_components: gke-gcloud-auth-plugin,bq
+      - name: Install pinned teardown tools
+        run: |
+          make tools
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
+      - name: Tear down assessment resources
+        env:
+          DISPATCHED_PROJECT_ID: ${{ inputs.project_id }}
+          DISPATCHED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: ./scripts/teardown.sh --project-id "${DISPATCHED_PROJECT_ID}" --confirmation "${DISPATCHED_CONFIRMATION}"
+      - name: Upload redacted cleanup report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teardown-report
+          path: artifacts/live/teardown-*.txt
+          if-no-files-found: ignore
+          retention-days: 7

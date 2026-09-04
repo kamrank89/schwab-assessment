@@ -1,0 +1,4 @@
+# Copy this file to backend.generated.tf and configure the GCS backend before use.
+terraform {
+  backend "gcs" {}
+}

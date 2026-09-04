@@ -2,6 +2,9 @@
 
 Use this only after an authorized manual workflow. Collect the minimum result needed, redact before storage, and never capture tokens, credentials, Secret Manager values, Terraform state/plans, kubeconfigs, full HTTP bodies, or unreviewed log/query rows. Every promoted record must satisfy [live-evidence-template.md](live-evidence-template.md).
 
+The currently retained automated evidence and its limitations are summarized
+in [live-runs.md](live-runs.md).
+
 ## Deployment identity
 
 - [ ] UTC start/end time and deployed commit SHA
@@ -45,7 +48,7 @@ Use this only after an authorized manual workflow. Collect the minimum result ne
 
 ## BigQuery and Grafana
 
-- [ ] exact routed BigQuery tables `stdout`, `requests`, `kubelet`, and `kube_apiserver` passed the bounded top-level schema-compatibility gate
+- [ ] exact routed BigQuery tables `stdout`, `requests`, `kubelet`, and `container_googleapis_com_apiserver` passed the bounded top-level schema-compatibility gate
 - [ ] all seven committed SQL files complete a live dry run
 - [ ] any actual query uses a bounded UTC/partition window; output is minimized and redacted; schema-discovery payloads and log rows are not uploaded
 - [ ] Grafana Deployment has one Ready/available primary-cluster replica

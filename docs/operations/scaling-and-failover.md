@@ -46,4 +46,6 @@ Call this a controlled application-backend failover exercise. The cluster remain
 
 ## Combined dispatch and evidence
 
-If both booleans are true, HPA runs before failover. Run one at a time for clearer evidence unless a reviewed test plan requires the sequence. Before execution define stop conditions, observers, expected codes, and the restoration owner. Afterward capture the redacted drill report, workflow URL, UTC times, commit, actor/reviewer, and configuration-reapplication result. Attach the subsequent smoke record separately before claiming exact three-replica restoration. A drill row remains `deployment-evidence-pending` until both required records exist.
+If both booleans are true, HPA runs before failover. That sequence was exercised successfully in retained run [33821149199](https://github.com/kamrank89/schwab-assessment/actions/runs/33821149199). The failover job's initial exact three-replica checks independently confirmed restoration after HPA. No smoke followed failover, so its report proves committed-overlay reapplication and rollout completion but not an independently observed exact post-restoration replica count.
+
+For future runs, execute one drill at a time when the clearest independent evidence is preferred. Record the workflow URL, UTC times, commit, actor/reviewer, expected results, redacted report, and restoration result. Use a subsequent smoke—or the next gated drill's equivalent exact baseline checks—before claiming exact replica restoration.

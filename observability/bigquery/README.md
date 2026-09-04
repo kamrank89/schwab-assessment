@@ -2,17 +2,19 @@
 
 This directory contains bounded Standard GoogleSQL examples for the partitioned
 BigQuery dataset created by `infra/foundation/logging_bigquery.tf`. The SQL files
-are templates, not records of live query results. BigQuery query validity, log
-ingestion, Grafana rendering, and all other deployment evidence are pending.
+are templates, not records of live query results. Retained smoke runs prove
+the exact routed-table schema gate and all seven dry runs, but not useful row
+contents or populated Grafana panels.
 
 ## Routed table and schema behavior
 
 Cloud Logging writes one BigQuery table per log name, not one table per
 monitored-resource type. Because this sink sets `use_partitioned_tables = true`,
 the table name is the normalized log ID without a date suffix, and rows are
-partitioned by the log entry `timestamp`. For example, `kube-apiserver` normally
-becomes `kube_apiserver`; characters unsupported by BigQuery identifiers are
-replaced with underscores.
+partitioned by the log entry `timestamp`. For example,
+`container.googleapis.com/apiserver` becomes
+`container_googleapis_com_apiserver`; characters unsupported by BigQuery
+identifiers are replaced with underscores.
 
 The templates use these likely table names:
 
@@ -20,7 +22,7 @@ The templates use these likely table names:
 | --- | --- | --- |
 | Application standard output | `stdout` | `resource.type = 'k8s_container'` plus the `assessment` namespace and application containers |
 | Kubelet node logs | `kubelet` | `resource.type = 'k8s_node'` |
-| Kubernetes API server | `kube_apiserver` | `resource.type = 'k8s_control_plane_component'` and `component_name = 'apiserver'` |
+| Kubernetes API server | `container_googleapis_com_apiserver` | `resource.type = 'k8s_control_plane_component'` and `component_name = 'apiserver'` |
 | External Application Load Balancer requests | `requests` | `resource.type = 'http_load_balancer'` |
 
 These names are the exact contract consumed by the committed queries. Tables do not
@@ -72,7 +74,8 @@ deployed the infrastructure and workloads, and received at least one record for
 each source, it must:
 
 1. Repeatedly execute rendered `schema-discovery.sql` as metadata-only Standard
-   SQL until `stdout`, `requests`, `kubelet`, and `kube_apiserver` have the
+   SQL until `stdout`, `requests`, `kubelet`, and
+   `container_googleapis_com_apiserver` have the
    compatible top-level columns used by the committed queries.
 2. Keep the returned schema payload out of reports and artifacts; record only
    the compatibility result.
@@ -95,7 +98,8 @@ for query_file in observability/bigquery/queries/*.sql; do
 done
 ```
 
-Successful dry-runs prove parsing and compatibility with the deployed schema;
+Successful dry runs prove parsing and compatibility with the deployed schema;
 they do not prove returned data, datasource authentication, panel rendering, or
-operational behavior. Those results remain deployment-evidence-pending until a
-protected workflow records them.
+operational behavior. Retained smoke runs establish schema compatibility and
+dry-run validity only; useful data and dashboard rendering still need separate
+evidence.

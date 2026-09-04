@@ -60,6 +60,12 @@ resource "google_project_iam_member" "gke_node_role" {
   member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
+resource "google_project_iam_member" "gke_node_service_agent" {
+  project = local.project_id
+  role    = "roles/container.defaultNodeServiceAgent"
+  member  = "serviceAccount:service-${local.project_number}@gcp-sa-gkenode.iam.gserviceaccount.com"
+}
+
 resource "google_service_account_iam_member" "pipeline_node_act_as" {
   service_account_id = google_service_account.gke_nodes.name
   role               = "roles/iam.serviceAccountUser"

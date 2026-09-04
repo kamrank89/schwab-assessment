@@ -61,4 +61,7 @@ gh workflow run deploy.yml --ref main \
 
 Do not rerun human bootstrap unless the bootstrap itself is absent or intentionally changed. Record redeploy smoke evidence as a new live record, not an amendment to the old deployment.
 
+The retained guarded teardown run and its exact claim boundaries are recorded
+in the [live-run summary](../evidence/live-runs.md).
+
 If this redeploy fails after foundation changes but before platform state mutation, the completion-bound foundation-only path is supported because the exact empty platform binding is unchanged. Once a deploy mutates platform state, the prior marker is stale and cannot authorize a shortcut; teardown must use the live MCI/controller inventory path and replaces the marker only after strict cleanup succeeds.

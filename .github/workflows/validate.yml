@@ -1,6 +1,9 @@
 name: validate
 
+# Account-free checks for pull requests and every update to main.
+
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:

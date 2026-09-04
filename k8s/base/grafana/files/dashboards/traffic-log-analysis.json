@@ -225,7 +225,7 @@
           "location": "US",
           "project": "${GCP_PROJECT_ID}",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp,\n  httpRequest.status AS status,\n  httpRequest.requestMethod AS method,\n  httpRequest.requestUrl AS url,\n  httpRequest.remoteIp AS remote_ip,\n  COALESCE(textPayload, TO_JSON_STRING(jsonPayload)) AS log_message\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND httpRequest.status BETWEEN 500 AND 599\nORDER BY timestamp DESC\nLIMIT 100",
+          "rawSql": "SELECT\n  timestamp,\n  httpRequest.status AS status,\n  httpRequest.requestMethod AS method,\n  httpRequest.requestUrl AS url,\n  httpRequest.remoteIp AS remote_ip,\n  COALESCE(textPayload, TO_JSON_STRING(textPayload)) AS log_message\nFROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.requests`\nWHERE $__timeFilter(timestamp)\n  AND httpRequest.status BETWEEN 500 AND 599\nORDER BY timestamp DESC\nLIMIT 100",
           "refId": "A"
         }
       ],

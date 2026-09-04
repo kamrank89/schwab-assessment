@@ -6,11 +6,16 @@
 # No account, authentication, cloud mutation, or live evidence.
 make validate
 git diff --check
-find . -type f \( -name '*.tfplan' -o -name '*.tfstate' -o -name '*.pem' -o -name '*service-account*.json' -o -name 'kubeconfig*' \) \
-  -not -path './.git/*' -print
+git ls-files | grep -E '(^|/)([^/]*\.tfplan|[^/]*\.tfstate(\..*)?|[^/]*\.pem|[^/]*service-account[^/]*\.json|kubeconfig[^/]*)$' || true
 ```
 
-The expected sensitive-artifact search output is empty. These checks prove syntax, formatting, recognized schemas, workflow lint, and JSON validity only. They cannot prove IAM, state locking, cluster/Fleet readiness, MCI reconciliation, endpoints, certificate state, Secret Manager mounts, logs, Grafana health, failover, HPA behavior, teardown, or cost.
+The expected tracked sensitive-artifact search output is empty. Ignored local
+Terraform caches or state backups still require secure workstation handling;
+they are not evidence and must never be force-added. These checks prove syntax,
+formatting, recognized schemas, workflow lint, and JSON validity only. They
+cannot prove IAM, state locking, cluster/Fleet readiness, MCI reconciliation,
+endpoints, certificate state, Secret Manager mounts, logs, Grafana health,
+failover, HPA behavior, teardown, or cost.
 
 ## Normal smoke verification
 
@@ -29,7 +34,7 @@ Smoke checks:
 - App A and App B each have exactly three desired/Ready/updated/available replicas in each region and successful rollouts;
 - the MCI VIP equals Terraform's reserved address, exactly two MCS objects exist, both BackendConfigs reference the Cloud Armor policy, and every reported backend status is `HEALTHY`;
 - HTTP/IP 2xx for both routes, or HTTP 3xx plus `ACTIVE` certificate and HTTPS 2xx when enabled;
-- the metadata-only BigQuery readiness loop finds exact `stdout`, `requests`, `kubelet`, and `kube_apiserver` tables with compatible required top-level columns before all seven SQL files pass a Standard SQL dry run, with one-hour bounded parameters for data queries; and
+- the metadata-only BigQuery readiness loop finds exact `stdout`, `requests`, `kubelet`, and `container_googleapis_com_apiserver` tables with compatible required top-level columns before all seven SQL files pass a Standard SQL dry run, with one-hour bounded parameters for data queries; and
 - Grafana is one Ready replica whose current Deployment-referenced dashboard ConfigMap has exactly the three expected JSON exports.
 
 The script writes a mode-0600 redacted report under `artifacts/live/smoke-<UTC>.txt`; GitHub retains the uploaded report for seven days. It deliberately omits response bodies, query rows, schema-discovery payloads, tokens, secrets, state, plans, and kubeconfigs. A workflow log/report is supporting evidence, not a substitute for the complete metadata required by [live-evidence-template.md](../evidence/live-evidence-template.md).
@@ -124,4 +129,4 @@ Stop the forward with Ctrl-C when finished. Never paste the password or dashboar
 
 ## Optional exercises
 
-HPA and application failover are excluded from normal smoke and run only when deliberately selected. Follow [scaling and failover](scaling-and-failover.md); do not describe either as executed until its restoration and evidence record are complete.
+HPA and application failover are excluded from normal smoke and run only when deliberately selected. Both were selected in retained run [33821149199](https://github.com/kamrank89/schwab-assessment/actions/runs/33821149199); their exact results and limits are recorded in the [live-run summary](../evidence/live-runs.md). Follow [scaling and failover](scaling-and-failover.md) for future runs.

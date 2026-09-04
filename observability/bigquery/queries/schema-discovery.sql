@@ -8,4 +8,10 @@ SELECT
   data_type,
   is_nullable
 FROM `${GCP_PROJECT_ID}.${BIGQUERY_DATASET}.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name IN (
+  'stdout',
+  'requests',
+  'kubelet',
+  'container_googleapis_com_apiserver'
+)
 ORDER BY table_name, ordinal_position;

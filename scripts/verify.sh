@@ -13,6 +13,8 @@ SECONDARY_CLUSTER="gke-assessment-us-east1"
 ROLLOUT_TIMEOUT="10m"
 DRILL_TIMEOUT_SECONDS=600
 BIGQUERY_READINESS_TIMEOUT_SECONDS=600
+BACKEND_HEALTH_TIMEOUT_SECONDS=300
+BIGQUERY_LOCATION="US"
 
 usage() {
   cat <<'USAGE'
@@ -134,6 +136,7 @@ global_ipv4_address=""
 bigquery_dataset=""
 cloud_armor_policy_name=""
 tls_certificate_name=""
+gke_node_gsa_email=""
 gateway_primary=""
 gateway_secondary=""
 gateway_config=""
@@ -163,6 +166,7 @@ initialize_context() {
   bigquery_dataset="$(jq -er '.bigquery_dataset_id.value' <<<"${platform_json}")"
   cloud_armor_policy_name="$(jq -er '.cloud_armor_policy_name.value' <<<"${platform_json}")"
   tls_certificate_name="$(jq -r '.tls_certificate_name.value // ""' <<<"${platform_json}")"
+  gke_node_gsa_email="$(jq -er '.gke_node_gsa_email.value' <<<"${platform_json}")"
 
   "${SCRIPT_DIR}/render-manifests.sh" \
     --project-id "${GCP_PROJECT_ID}" \
@@ -293,6 +297,8 @@ verify_backend_health() {
   local backend_service
   local health_json
   local backend_count=0
+  local health_deadline
+  local health_ready
 
   backend_services="$(jq -r '
     (.status.CloudResources.BackendServices //
@@ -311,20 +317,73 @@ verify_backend_health() {
     backend_service="${backend_service//[[:space:]\"]/}"
     [[ -n "${backend_service}" ]] || continue
     backend_count=$((backend_count + 1))
-    health_json="$(gcloud compute backend-services get-health "${backend_service}" \
-      --global --project="${GCP_PROJECT_ID}" --format=json)"
-    jq -e '[.[]?.status.healthStatus[]?] |
-      (length > 0 and all(.healthState == "HEALTHY"))' <<<"${health_json}" >/dev/null ||
-      die "Backend service ${backend_service} is not fully HEALTHY."
+    health_deadline=$((SECONDS + BACKEND_HEALTH_TIMEOUT_SECONDS))
+    health_ready=false
+    while ((SECONDS < health_deadline)); do
+      if health_json="$(gcloud compute backend-services get-health "${backend_service}" \
+        --global --project="${GCP_PROJECT_ID}" --format=json)" &&
+        jq -e '[.[]?.status.healthStatus[]?] |
+          (length > 0 and all(.healthState == "HEALTHY"))' \
+          <<<"${health_json}" >/dev/null; then
+        health_ready=true
+        break
+      fi
+      sleep 10
+    done
+    [[ "${health_ready}" == "true" ]] ||
+      die "Backend service ${backend_service} did not become fully HEALTHY within ${BACKEND_HEALTH_TIMEOUT_SECONDS} seconds."
     record "backend_service=${backend_service} health=HEALTHY"
   done <<<"${backend_services}"
   ((backend_count >= 2)) || die "MultiClusterIngress did not report both backend services."
 }
 
+bigquery_schema_gaps() {
+  jq -r '
+    . as $schema |
+    [
+      ["stdout", "timestamp", "TIMESTAMP"],
+      ["stdout", "severity", "STRING"],
+      ["stdout", "resource", "STRUCT"],
+      ["stdout", "textPayload", "STRING"],
+      ["requests", "timestamp", "TIMESTAMP"],
+      ["requests", "resource", "STRUCT"],
+      ["requests", "httpRequest", "STRUCT"],
+      ["kubelet", "timestamp", "TIMESTAMP"],
+      ["kubelet", "severity", "STRING"],
+      ["kubelet", "resource", "STRUCT"],
+      ["kubelet", "jsonPayload", "STRUCT"],
+      ["container_googleapis_com_apiserver", "timestamp", "TIMESTAMP"],
+      ["container_googleapis_com_apiserver", "severity", "STRING"],
+      ["container_googleapis_com_apiserver", "resource", "STRUCT"],
+      ["container_googleapis_com_apiserver", "jsonPayload", "STRUCT"]
+    ] |
+    map(. as $requirement |
+      select((any($schema[];
+        .table_name == $requirement[0] and
+        .column_name == $requirement[1] and
+        (if $requirement[2] == "STRUCT" then
+           (.data_type | startswith("STRUCT<"))
+         else
+           .data_type == $requirement[2]
+         end)
+      )) | not) |
+      "\(.[0]).\(.[1]):\(.[2])"
+    ) |
+    join(",")
+  '
+}
+
+bigquery_table_names() {
+  jq -r '[.[].table_name] | unique | join(",")'
+}
+
 verify_bigquery() {
   local schema_file="${REPO_ROOT}/observability/bigquery/queries/schema-discovery.sql"
+  local schema_error_file="${temporary_root}/bigquery-schema-error.txt"
   local schema_query
   local schema_json
+  local schema_gaps=""
+  local table_names=""
   local schema_ready="false"
   local deadline=$((SECONDS + BIGQUERY_READINESS_TIMEOUT_SECONDS))
   local query_file
@@ -336,8 +395,10 @@ verify_bigquery() {
     -e "s|\${BIGQUERY_DATASET}|${bigquery_dataset}|g" "${schema_file}")"
   schema_json='[]'
   while ((SECONDS < deadline)); do
-    if ! schema_json="$(bq query --project_id="${GCP_PROJECT_ID}" --quiet \
-      --format=json --use_legacy_sql=false "${schema_query}" 2>/dev/null)"; then
+    if ! schema_json="$(bq --location="${BIGQUERY_LOCATION}" query \
+      --project_id="${GCP_PROJECT_ID}" --quiet --format=json --use_legacy_sql=false \
+      2>"${schema_error_file}" <<<"${schema_query}")"; then
+      sed -n '1,20p' "${schema_error_file}" >&2
       die "Could not execute BigQuery metadata schema discovery during readiness."
     fi
     jq -e '
@@ -350,41 +411,17 @@ verify_bigquery() {
       )
     ' <<<"${schema_json}" >/dev/null ||
       die "BigQuery schema discovery returned malformed metadata."
-    if jq -e '
-      def has_column($table; $column; $kind):
-        any(.[];
-          .table_name == $table and
-          .column_name == $column and
-          (if $kind == "STRUCT" then
-             (.data_type | startswith("STRUCT<"))
-           else
-             .data_type == $kind
-           end)
-        );
-      has_column("stdout"; "timestamp"; "TIMESTAMP") and
-      has_column("stdout"; "severity"; "STRING") and
-      has_column("stdout"; "resource"; "STRUCT") and
-      has_column("stdout"; "textPayload"; "STRING") and
-      has_column("requests"; "timestamp"; "TIMESTAMP") and
-      has_column("requests"; "resource"; "STRUCT") and
-      has_column("requests"; "httpRequest"; "STRUCT") and
-      has_column("kubelet"; "timestamp"; "TIMESTAMP") and
-      has_column("kubelet"; "severity"; "STRING") and
-      has_column("kubelet"; "resource"; "STRUCT") and
-      has_column("kubelet"; "jsonPayload"; "STRUCT") and
-      has_column("kube_apiserver"; "timestamp"; "TIMESTAMP") and
-      has_column("kube_apiserver"; "severity"; "STRING") and
-      has_column("kube_apiserver"; "resource"; "STRUCT") and
-      has_column("kube_apiserver"; "jsonPayload"; "STRUCT")
-    ' <<<"${schema_json}" >/dev/null; then
+    schema_gaps="$(bigquery_schema_gaps <<<"${schema_json}")"
+    if [[ -z "${schema_gaps}" ]]; then
       schema_ready="true"
       break
     fi
     sleep 15
   done
+  table_names="$(bigquery_table_names <<<"${schema_json}")"
   [[ "${schema_ready}" == "true" ]] ||
-    die "BigQuery schema readiness timed out: exact tables stdout, requests, kubelet, and kube_apiserver with the committed queries' required top-level TIMESTAMP, STRING, and STRUCT columns were not all compatible."
-  record "bigquery_dataset=${bigquery_dataset} required_tables=stdout,requests,kubelet,kube_apiserver schema=compatible"
+    die "BigQuery schema readiness timed out; observed tables: ${table_names:-none}; missing or incompatible expected contracts: ${schema_gaps}."
+  record "bigquery_dataset=${bigquery_dataset} required_tables=stdout,requests,kubelet,container_googleapis_com_apiserver schema=compatible"
 
   VERIFY_END_TIME="${VERIFY_END_TIME:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}"
   VERIFY_START_TIME="${VERIFY_START_TIME:-$(date -u -d '1 hour ago' +'%Y-%m-%dT%H:%M:%SZ')}"
@@ -402,8 +439,9 @@ verify_bigquery() {
       query_parameters+=(--parameter=start_time:TIMESTAMP:"${VERIFY_START_TIME}")
       query_parameters+=(--parameter=end_time:TIMESTAMP:"${VERIFY_END_TIME}")
     fi
-    bq query --project_id="${GCP_PROJECT_ID}" --dry_run --use_legacy_sql=false \
-      "${query_parameters[@]}" "${query_text}" >/dev/null
+    bq --location="${BIGQUERY_LOCATION}" query --project_id="${GCP_PROJECT_ID}" \
+      --dry_run --use_legacy_sql=false "${query_parameters[@]}" \
+      <<<"${query_text}" >/dev/null
     record "bigquery_query=$(basename "${query_file}") dry_run=successful"
   done
   [[ ${query_count} -eq 7 ]] || die "Expected exactly seven committed BigQuery SQL files."
@@ -447,10 +485,12 @@ smoke_verification() {
   local cluster
   local membership_status
   local cluster_status
+  local node_service_account
   local mci_json
   local mci_vip
   local mcs_json
   local backend_policy
+  local backend_config_json
   local certificate_status
 
   initialize_context
@@ -469,8 +509,13 @@ smoke_verification() {
     cluster_status="$(gcloud container clusters describe "${cluster}" --region="${region}" \
       --project="${GCP_PROJECT_ID}" --format='value(status)')"
     [[ "${cluster_status}" == "RUNNING" ]] || die "Cluster ${cluster} is not RUNNING."
+    node_service_account="$(gcloud container clusters describe "${cluster}" --region="${region}" \
+      --project="${GCP_PROJECT_ID}" \
+      --format='value(autoscaling.autoprovisioningNodePoolDefaults.serviceAccount)')"
+    [[ "${node_service_account}" == "${gke_node_gsa_email}" ]] ||
+      die "Cluster ${cluster} node service account differs from the foundation output."
     record "fleet_membership=${cluster} status=READY"
-    record "cluster=${cluster} region=${region} status=RUNNING"
+    record "cluster=${cluster} region=${region} status=RUNNING node_service_account=configured"
   done
 
   assert_three_ready "${gateway_primary}" "${PRIMARY_REGION}" app-a
@@ -491,11 +536,15 @@ smoke_verification() {
   record "multicluster_services=app-a-mcs,app-b-mcs status=present"
 
   for backend_config in app-a-backend app-b-backend; do
-    backend_policy="$(KUBECONFIG="${gateway_config}" kubectl -n assessment get \
-      "backendconfig.cloud.google.com/${backend_config}" -o jsonpath='{.spec.securityPolicy.name}')"
+    backend_config_json="$(KUBECONFIG="${gateway_config}" kubectl -n assessment get \
+      "backendconfig.cloud.google.com/${backend_config}" -o json)"
+    backend_policy="$(jq -er '.spec.securityPolicy.name' <<<"${backend_config_json}")"
     [[ "${backend_policy}" == "${cloud_armor_policy_name}" ]] ||
       die "BackendConfig ${backend_config} is not attached to the expected Cloud Armor policy."
-    record "backend_config=${backend_config} cloud_armor=attached"
+    jq -e '.spec.logging.enable == true and .spec.logging.sampleRate == 1' \
+      <<<"${backend_config_json}" >/dev/null ||
+      die "BackendConfig ${backend_config} does not enable full-sample load-balancer logging."
+    record "backend_config=${backend_config} cloud_armor=attached logging=enabled sample_rate=1"
   done
   verify_backend_health "${mci_json}"
 

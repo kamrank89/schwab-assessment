@@ -17,7 +17,7 @@ The runtime GSA has Monitoring viewer, BigQuery job user, and dataset data viewe
 | `multicluster-operations.json` | Serving-region request volume, restarts by cluster, global backend p95 latency |
 | `traffic-log-analysis.json` | HTTP status traffic, top request paths, recent 5xx logs |
 
-`make validate-grafana` proves all committed JSON parses. `verify.sh smoke` proves only in a future live run that the Grafana Deployment is Ready and the exact ConfigMap referenced by its current `dashboards` volume has exactly these three JSON keys. Stale hash-suffixed ConfigMaps left by plain apply are ignored. Datasource success and populated panels require live data and remain pending.
+`make validate-grafana` proves all committed JSON parses. The retained smoke run proves that the Grafana Deployment was Ready and the exact ConfigMap referenced by its current `dashboards` volume had exactly these three JSON keys. Stale hash-suffixed ConfigMaps left by plain apply are ignored. Datasource success and populated panels still require a sanitized interactive record and remain pending.
 
 ## Access and evidence boundary
 

@@ -8,7 +8,7 @@ Copy this template for each authorized deployment, optional exercise, teardown, 
 | --- | --- |
 | Evidence ID | Stable identifier, for example `20260902T120000Z-smoke` |
 | Scope | One bounded claim: cluster/Fleet, replicas, routing, BigQuery, Grafana, HTTPS-to-HTTP transition, drill, teardown, or residuals |
-| Status | `verified-live` only after review; otherwise `deployment-evidence-pending` |
+| Status | `verified-live` only after independent review; use `observed-live` for a retained successful run awaiting that review, otherwise `deployment-evidence-pending` |
 | Start time UTC | RFC 3339 seconds |
 | End time UTC | RFC 3339 seconds |
 | Commit SHA | Full 40-character deployed commit |

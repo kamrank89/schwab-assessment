@@ -1,5 +1,5 @@
 -- Standard GoogleSQL
--- Likely routed table: the partitioned table for `kubelet` node logs.
+-- Routed table: the normalized `container.googleapis.com/kubelet` log ID.
 SELECT
   timestamp,
   severity,

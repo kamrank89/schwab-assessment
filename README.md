@@ -2,7 +2,7 @@
 
 This repository is a deploy-ready, Terraform- and Kustomize-based assessment implementation for two regional GKE Autopilot clusters, two three-replica web applications, global Multi Cluster Ingress, Cloud Armor, Secret Manager, BigQuery log analysis, and Grafana.
 
-No Google Cloud deployment has been run from this repository. Account-free checks are recorded separately from live evidence in [evidence status](docs/evidence/status.md); every cloud-dependent result remains `deployment-evidence-pending` until an authorized run is recorded with the [live evidence template](docs/evidence/live-evidence-template.md).
+The HTTP baseline has been deployed and exercised through authenticated GitHub Actions runs. Smoke, HPA reconciliation, controlled application-backend failover, and guarded teardown completed successfully; HTTPS, post-teardown redeployment, populated Grafana panels, and billing remain unverified. See the [live-run summary](docs/evidence/live-runs.md) and [evidence status](docs/evidence/status.md) for exact claim boundaries.
 
 ## Shortest safe operator path
 
@@ -83,6 +83,6 @@ No Google Cloud deployment has been run from this repository. Account-free check
 - [Security posture and limitations](docs/security/limitations.md)
 - [Cost assumptions and controls](docs/cost.md)
 - [Evidence status](docs/evidence/status.md)
-- [Interview guide](docs/interview-guide.md)
+- [Architecture walkthrough](docs/architecture-walkthrough.md)
 
 The assessment's supplied source is preserved byte-for-byte at [docs/requirements/assessment-source.md](docs/requirements/assessment-source.md).

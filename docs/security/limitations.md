@@ -2,7 +2,7 @@
 
 This repository demonstrates a coherent assessment architecture; it is not a production accreditation, penetration test, availability result, or compliance control set.
 
-- **No live proof:** no cloud authentication, plan/apply, endpoint, IAM evaluation, secret mount, dashboard, query result, failover, HPA response, teardown, or residual check has been run for this delivery.
+- **Bounded live proof:** retained authenticated runs prove deployment, smoke, HTTP routing, BigQuery schema/query dry runs, Grafana readiness/provisioning, HPA reconciliation, application-backend failover, and guarded teardown with retained-anchor reporting. They do not prove broad IAM least privilege, secret access boundaries, populated panels, query data quality, HTTPS, post-teardown redeployment, independent provider-external residual review, production capacity, or cost.
 - **One broad deployer:** `assessment-deployer` spans creation, verification, and destruction. Production needs identity/role separation and independent approval.
 - **Baseline WIF subject:** only the immutable owner-ID/repository-ID `main` branch subject is allowed. A legacy repository or fork must opt in or deliberately adapt/review trust before bootstrap. Protected GitHub Environments are recommended but require a WIF-first subject migration and are not configured by repository automation.
 - **HTTP-first endpoint:** the immediately deployable path is unencrypted HTTP by IP. Production needs an owned domain, active TLS, appropriate redirect/HSTS policy, and security review.
